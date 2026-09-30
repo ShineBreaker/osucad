@@ -1,16 +1,16 @@
 import type { DrawableHitObject } from "@osucad/core";
 import { ISkinSource } from "@osucad/core";
 import type { ReadonlyDependencyContainer } from "@osucad/framework";
-import { Anchor, Axes, Bindable, CompositeDrawable, DrawableSprite, EasingFunction, Interpolation, ProxyDrawable, resolved } from "@osucad/framework";
+import { Anchor, Axes, CompositeDrawable, DrawableSprite, EasingFunction, Interpolation, ProxyDrawable, resolved } from "@osucad/framework";
 import { DrawableSliderRepeat } from "../../hitObjects/drawables/DrawableSliderRepeat";
-import { Color } from "pixi.js";
+
+// 相对圈体缩小 40%
+const REVERSE_ARROW_SCALE = 0.6;
 
 export class LegacyReverseArrow extends CompositeDrawable
 {
   @resolved(() => DrawableSliderRepeat)
   accessor #drawableRepeat!: DrawableSliderRepeat;
-
-  private readonly accentColor = new Bindable(new Color(0xffffff));
 
   @resolved(ISkinSource)
   accessor #skinSource!: ISkinSource;
@@ -48,13 +48,6 @@ export class LegacyReverseArrow extends CompositeDrawable
     this.#drawableRepeat.hitObjectApplied.addListener(this.#onHitObjectApplied, this);
     this.#onHitObjectApplied(this.#drawableRepeat);
 
-    const textureIsDefaultSkin = true; // TODO
-
-    this.accentColor.bindTo(this.#drawableRepeat.accentColor);
-    this.accentColor.bindValueChanged(c =>
-    {
-      this.#arrow.color = textureIsDefaultSkin && c.value.red + c.value.green + c.value.blue > (600 / 255) ? 0x000000 : 0xFFFFFF;
-    }, true);
   }
 
   #onHitObjectApplied(hitObject: DrawableHitObject)
@@ -73,7 +66,7 @@ export class LegacyReverseArrow extends CompositeDrawable
     if (this.time.current >= this.#drawableRepeat.hitStateUpdateTime && isHit)
     {
       const animDuration = Math.min(300, this.#drawableRepeat.hitObject.spanDuration);
-      this.#arrow.scale = Interpolation.valueAt(
+      this.#arrow.scale = REVERSE_ARROW_SCALE * Interpolation.valueAt(
           this.time.current,
           1,
           1.4,
@@ -93,11 +86,11 @@ export class LegacyReverseArrow extends CompositeDrawable
       if (this.#shouldRotate)
       {
         this.#arrow.rotation = Interpolation.valueAt(loopCurrentTime, rotation, -rotation, 0, duration);
-        this.#arrow.scale = Interpolation.valueAt(loopCurrentTime, 1.3, 1, 0, duration);
+        this.#arrow.scale = REVERSE_ARROW_SCALE * Interpolation.valueAt(loopCurrentTime, 1.3, 1, 0, duration);
       }
       else
       {
-        this.#arrow.scale = Interpolation.valueAt(loopCurrentTime, 1.3, 1, 0, duration, EasingFunction.Out);
+        this.#arrow.scale = REVERSE_ARROW_SCALE * Interpolation.valueAt(loopCurrentTime, 1.3, 1, 0, duration, EasingFunction.Out);
       }
     }
   }

@@ -92,6 +92,11 @@ export class PoolableSkinnableSample extends SkinReloadableDrawable
     if (this.#sample === null)
       return;
 
+    // loop channel 永不自然结束，重开前必须停掉旧的，否则引用被顶替后永久泄漏；
+    // 一次性 channel 不停，让尾音自然播完
+    if (this.#activeChannel?.looping)
+      this.#activeChannel.stop();
+
     this.#activeChannel = this.#sample.getChannel();
     this.#activeChannel.looping = this.looping;
     this.#activeChannel.play();

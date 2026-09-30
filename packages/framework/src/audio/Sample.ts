@@ -58,6 +58,26 @@ export class Sample extends AudioDestination<SampleChannel> implements IAudioSou
     return this.buffer.duration * 1000;
   }
 
+  // dispose 后若仍有 channel 在播尾音，继续保持挂接直到全部播完，
+  // 再由 destination 的 updateChildren 正常摘除（否则 disconnect 会立刻把尾音静音）
+  override get isAlive()
+  {
+    return super.isAlive || this.items.some(it => it.isAlive);
+  }
+
+  override update()
+  {
+    // 已 dispose 的 Sample 不能走 AudioComponent.update（会抛 disposed 错误），
+    // 只需继续修剪已播完的 channel
+    if (this.isDisposed)
+    {
+      this.updateChildren();
+      return;
+    }
+
+    super.update();
+  }
+
   play()
   {
     const channel = this.getChannel();

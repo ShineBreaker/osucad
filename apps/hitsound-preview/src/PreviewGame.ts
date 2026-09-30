@@ -101,7 +101,14 @@ export class PreviewGame extends OsucadGameBase
     switch (action)
     {
     case "play":
-      await this.resumeAudio();
+      // resumeAudio 不 await：ctx 挂起时 resume() 可能挂住（页面隐藏），但时钟状态
+      // 必须先动起来；source.start 在挂起的 ctx 上不推进，恢复后自动续播
+      void this.resumeAudio();
+      // 播到结尾自然停下后再按播放 = 从头重播（与初次装载相同的提前量）。
+      // 位置读 source.currentTime：FramedClock.currentTime 逐帧更新可能滞后于真实轨尾。
+      if (!this.clock.isRunning && this.#duration() > 0
+        && this.clock.source.currentTime >= this.#duration() - 1)
+        this.clock.seek(Math.max(0, this.clock.gameplayStartTime - 1000));
       this.clock.play();
       break;
     case "pause":

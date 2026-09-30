@@ -63,7 +63,10 @@ export class SampleChannel extends AudioComponent implements IAudioSource
 
   public stop()
   {
-    this.#source.stop();
+    // 未 start 过的 AudioBufferSourceNode 调 stop() 会抛 InvalidStateError
+    if (this.#played)
+      this.#source.stop();
+
     this.#playing = false;
   }
 
@@ -84,13 +87,27 @@ export class SampleChannel extends AudioComponent implements IAudioSource
 
   destination?: IAudioDestination;
 
+  #disposeAfterEnded = false;
+
   #onEnded()
   {
     this.#playing = false;
+
+    if (this.#disposeAfterEnded)
+      this.dispose();
   }
 
   public override dispose()
   {
+    // 仍在发声的一次性 channel 延迟到自然播完再回收：
+    // 宿主 drawable 死亡/换肤触发的 dispose 不应掐断尾音。
+    // loop 永远不会自然结束，必须走正常 dispose 立即停掉。
+    if (this.#playing && !this.looping)
+    {
+      this.#disposeAfterEnded = true;
+      return;
+    }
+
     this.stop();
 
     this.#rate.unbindAll();

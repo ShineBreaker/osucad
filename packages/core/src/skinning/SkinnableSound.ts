@@ -91,13 +91,12 @@ export class SkinnableSound extends SkinReloadableDrawable
   {
     this.flushPendingSkinChanges();
 
+    // 不在 play 前 stop：每次 play 走新 channel，上一个尾音播完为止（对齐 lazer，
+    // 快速重复触发同一采样不互相截断）；loop 的停/重启由调用方显式处理
     for (const c  of this.#samplesContainer.children)
     {
       if (this.playWhenZeroVolume || c.volume.value > 0)
-      {
-        c.stop();
         c.play();
-      }
     }
   }
 

@@ -174,6 +174,16 @@ const SAMPLE_URLS = import.meta.glob<string>("./assets/samples/*.wav", {
   query: "?url", import: "default", eager: true,
 });
 
+// ── 用户自绘皮肤贴图：同名文件覆盖下面的程序化生成件；未提供的名字
+// （approachcircle/reversearrow/sliderendcircle/followpoint/数字/判定图等）保持生成。
+const SKIN_TEXTURE_URLS = import.meta.glob<string>("./assets/skin/*.png", {
+  query: "?url", import: "default", eager: true,
+});
+
+const PROVIDED_TEXTURES = new Set(
+  Object.keys(SKIN_TEXTURE_URLS).map(p => p.slice(p.lastIndexOf("/") + 1)),
+);
+
 async function loadFont()
 {
   try
@@ -200,6 +210,11 @@ export function defaultSkinFiles(): Promise<Map<string, ArrayBuffer>>
     const files = new Map<string, ArrayBuffer>();
     const set = async (name: string, size: number, draw: (ctx: CanvasRenderingContext2D, s: number) => void) =>
     {
+      // 有真贴图的名字整体跳过生成（含 @2x——同名字只用用户提供的一个分辨率，
+      // 避免 hidpi 下生成件与真贴图画风不一致）
+      if (PROVIDED_TEXTURES.has(`${name}.png`))
+        return;
+
       files.set(`${name}.png`, await png(size, draw));
       files.set(`${name}@2x.png`, await png(size * 2, draw));
     };
@@ -218,6 +233,10 @@ export function defaultSkinFiles(): Promise<Map<string, ArrayBuffer>>
     await set("hit0", 160, judgement("✕", "#ff7d7d"));
 
     files.set("cursortrail.png", await png(24, softDot));
+    // 滑条 tick 圆点（sliderscorepoint）没有生成件时是个缺纹理的隐形点——
+    // 若用户未提供，用 softDot 垫底
+    if (!PROVIDED_TEXTURES.has("sliderscorepoint.png"))
+      files.set("sliderscorepoint.png", await png(24, softDot));
     // 滑条尾不画圈体：sliderendcircle 缺省时 LegacyCirclePiece 回落到 hitcircle，
     // 提供一张全透明纹理即可命中 priorityLookup 同时不渲染任何东西
     files.set("sliderendcircle.png", await png(8, () => {}));
@@ -234,6 +253,13 @@ export function defaultSkinFiles(): Promise<Map<string, ArrayBuffer>>
       const bare = name.replace(/^(normal|soft|drum)-/, "");
       if (name.startsWith("normal-"))
         files.set(bare, bytes);
+    }
+
+    // 用户自绘贴图覆盖同名生成件
+    for (const [path, url] of Object.entries(SKIN_TEXTURE_URLS))
+    {
+      const bytes = await (await fetch(url)).arrayBuffer();
+      files.set(path.slice(path.lastIndexOf("/") + 1), bytes);
     }
 
     return files;

@@ -73,12 +73,15 @@ export class AudioBufferTrack extends Track
     this.#contextTimeAtStart = this.contextTimeMillis;
     this.#timeAtStart = this.#offset;
 
-    this.#source.onended = (ev) =>
+    this.#source.onended = () =>
     {
-      if (this.contextTimeMillis - this.#offset < this.length - 10)
+      // stop() 触发的 onended 已被置 null；seek 时旧 source 的 onended 同样先被摘除。
+      // 这里只需防「没到轨尾就 ended」的异常路径——比较轨道时间而非 context 时钟
+      // （旧实现 contextTimeMillis - offset 混合两个时钟域，seek 后永不成立 → 卡在 running）
+      if (this.currentTime < this.length - 10)
         return;
       this.#source = null;
-      this.#offset += (this.contextTimeMillis - this.#contextTimeAtStart) * this.rate;
+      this.#offset = this.length;
       this.raiseCompleted();
     };
   }
