@@ -151,12 +151,20 @@ export class OsuLegacySkinTransformer extends SkinTransformer
         return new LegacyReverseArrow();
       case OsuSkinComponents.SpinnerBody:
         return new LegacyOldStyleSpinner();
-      case OsuSkinComponents.SliderBall:
-        return new LegacySliderBall(this.getAnimation("sliderb"));
+      case OsuSkinComponents.SliderBall: {
+        const sliderb = this.getAnimation("sliderb");
+        if (sliderb)
+          return new LegacySliderBall(sliderb);
+        break;
+      }
       case OsuSkinComponents.Cursor:
-        return new LegacyCursor(this);
+        if (this.getTexture("cursor") !== null)
+          return new LegacyCursor(this);
+        break;
       case OsuSkinComponents.CursorTrail:
-        return new LegacyCursorTrail(this);
+        if (this.getTexture("cursortrail") !== null)
+          return new LegacyCursorTrail(this);
+        break;
       case OsuSkinComponents.HitCircleText: {
         if (!this.hasFont(LegacyFont.HitCircle))
           return null;
