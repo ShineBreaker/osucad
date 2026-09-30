@@ -169,52 +169,13 @@ function judgement(label: string, color: string)
 }
 
 // ── 默认音效：多数谱面包不带 *-hitnormal 等基础音效（它们来自玩家皮肤）。
-// 程序化合成 PCM16 wav 垫底；包内同名文件优先覆盖。
-function wavPcm(pcm: Int16Array, sampleRate = 22050): ArrayBuffer
-{
-  const out = new Uint8Array(44 + pcm.byteLength);
-  const v = new DataView(out.buffer);
-  const tag = (o: number, s: string) => s.split("").forEach((c, i) => out[o + i] = c.charCodeAt(0));
-  tag(0, "RIFF"); v.setUint32(4, 36 + pcm.byteLength, true); tag(8, "WAVEfmt ");
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
-  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  tag(36, "data"); v.setUint32(40, pcm.byteLength, true);
-  new Int16Array(out.buffer, 44).set(pcm);
-  return out.buffer;
-}
-
-// 短促打击音：指数衰减正弦 + 少量噪声
-function hitSound(freq: number, decayMs: number, noiseAmp = 0): ArrayBuffer
-{
-  const sr = 22050, n = Math.floor(sr * decayMs / 1000);
-  const pcm = new Int16Array(n);
-  for (let i = 0; i < n; i++)
-  {
-    const t = i / sr;
-    const env = Math.exp(-i / (n / 5));
-    const tone = Math.sin(2 * Math.PI * freq * t) * env;
-    const noise = (Math.random() * 2 - 1) * env * noiseAmp;
-    pcm[i] = Math.round((tone * (1 - noiseAmp) + noise) * 28000);
-  }
-  return wavPcm(pcm, sr);
-}
-
-const SAMPLE_SETS = ["normal", "soft", "drum"] as const;
-const SAMPLE_KINDS = ["hitnormal", "hitwhistle", "hitfinish", "hitclap"] as const;
-
-function defaultSample(name: string): ArrayBuffer
-{
-  // 按音效名给不同音色：whistle 偏噪声高频，finish 长衰减，clap 中频噪声，normal 短促
-  const kind = name.replace(/^(normal|soft|drum)-/, "");
-  switch (kind)
-  {
-  case "hitwhistle": return hitSound(5200, 40, 0.5);
-  case "hitfinish": return hitSound(1800, 140, 0.35);
-  case "hitclap": return hitSound(1400, 70, 0.55);
-  default: return hitSound(name.startsWith("drum") ? 900 : name.startsWith("soft") ? 1600 : 2200, 45, 0.08);
-  }
-}
+// 用 osu!stable 官方默认皮肤采样垫底（ppy/osu-resources
+// osu.Game.Resources/Skins/Legacy，CC BY-NC）：normal/soft/drum 三套
+// hitnormal/hitwhistle/hitfinish/hitclap + sliderslide/slidertick/sliderwhistle。
+// 包内同名文件优先覆盖。
+const SAMPLE_URLS = import.meta.glob<string>("./assets/samples/*.wav", {
+  query: "?url", import: "default", eager: true,
+});
 
 async function loadFont()
 {
@@ -267,12 +228,16 @@ export function defaultSkinFiles(): Promise<Map<string, ArrayBuffer>>
     for (let i = 0; i < 10; i++)
       await set(`default-${i}`, 80, digit(i));
 
-    // 默认 hitsound：normal-/soft-/drum- 三套 + 无前缀裸名（部分旧谱面 lookup 用）
-    for (const kind of SAMPLE_KINDS)
-      files.set(`${kind}.wav`, defaultSample(kind));
-    for (const set of SAMPLE_SETS)
-      for (const kind of SAMPLE_KINDS)
-        files.set(`${set}-${kind}.wav`, defaultSample(`${set}-${kind}`));
+    // 官方 legacy 采样；裸名（hitnormal.wav 等，部分旧谱面 lookup 用）复用 normal- 套
+    for (const [path, url] of Object.entries(SAMPLE_URLS))
+    {
+      const bytes = await (await fetch(url)).arrayBuffer();
+      const name = path.slice(path.lastIndexOf("/") + 1);
+      files.set(name, bytes);
+      const bare = name.replace(/^(normal|soft|drum)-/, "");
+      if (name.startsWith("normal-"))
+        files.set(bare, bytes);
+    }
 
     return files;
   })());
