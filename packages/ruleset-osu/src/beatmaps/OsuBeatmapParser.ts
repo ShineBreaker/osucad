@@ -23,8 +23,6 @@ export class OsuBeatmapParser implements RulesetBeatmapParser
 
     const additions: SampleAdditions = Number.parseInt(values[4]);
 
-    const hitSound = parseHitSound(values[5], additions, startTime, beatmap);
-
     if (type & HitType.Normal)
     {
       return new HitCircle({
@@ -32,13 +30,16 @@ export class OsuBeatmapParser implements RulesetBeatmapParser
         position: { x, y },
         newCombo,
         comboOffset,
-        hitSound,
+        hitSound: parseHitSound(values[5], additions, startTime, beatmap),
       });
     }
 
     if (type & HitType.Slider)
     {
       const spanCount = Number.parseInt(values[6]);
+
+      // hitSample 列在 sliders 上是 values[10]（values[5] 是曲线规格串）
+      const hitSound = parseHitSound(values[10] ?? "", additions, startTime, beatmap);
 
       return new Slider({
         startTime,
@@ -63,7 +64,7 @@ export class OsuBeatmapParser implements RulesetBeatmapParser
         newCombo,
         comboOffset,
         duration,
-        hitSound,
+        hitSound: parseHitSound(values[6] ?? "", additions, startTime, beatmap),
       });
     }
 

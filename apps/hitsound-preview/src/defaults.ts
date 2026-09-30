@@ -99,16 +99,13 @@ function softDot(ctx: CanvasRenderingContext2D, s: number)
   ctx.fillRect(0, 0, s, s);
 }
 
-// Argon 滑条球：同圈体的暗心+亮环结构（sliderb 也会被染色）
+// 滑条球：简单白色圆点，比滑条本体小一圈（allowSliderBallTint 默认关，保持白色）
 function sliderBall(ctx: CanvasRenderingContext2D, s: number)
 {
-  argonCircle(ctx, s);
-  const lw = Math.max(s * 0.06, 1.5);
-  ctx.strokeStyle = "#ffffff";
-  ctx.lineWidth = lw;
+  ctx.fillStyle = "#ffffff";
   ctx.beginPath();
-  ctx.arc(s / 2, s / 2, s / 2 - lw / 2 - s * 0.01, 0, Math.PI * 2);
-  ctx.stroke();
+  ctx.arc(s / 2, s / 2, s * 0.36, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // Argon follow circle：细环 + 极淡底

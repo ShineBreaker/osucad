@@ -84,8 +84,5 @@ export class DrawableSliderTail extends DrawableOsuHitObject<SliderTailCircle>
   {
     this.drawableSlider?.sliderInputManager.tryJudgeNestedObject(this, timeOffset);
   }
-
-  protected override playSamples()
-  {
-  }
 }
+

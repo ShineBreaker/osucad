@@ -175,6 +175,9 @@ importers:
       '@osucad/ruleset-osu':
         specifier: workspace:*
         version: link:../../packages/ruleset-osu
+      pixi.js:
+        specifier: ^8.18.1
+        version: 8.18.1
     devDependencies:
       vite:
         specifier: ^7.3.3

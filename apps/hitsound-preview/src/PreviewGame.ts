@@ -4,6 +4,7 @@ import type { ITrack } from "@osucad/framework";
 import { AudioBufferTrack, Axes, LoadState, SimpleFileSystem, ZipArchiveFileSystem } from "@osucad/framework";
 import type { ToParent, ToPreview } from "./protocol";
 import { postToParent } from "./protocol";
+import { Color } from "pixi.js";
 import { defaultSkinFiles } from "./defaults";
 import { PreviewClock } from "./PreviewClock";
 import { PreviewScreen } from "./PreviewScreen";
@@ -236,6 +237,10 @@ export class PreviewGame extends OsucadGameBase
     // 谱面 [Colours] 的 combo 颜色优先于皮肤默认（未解析到时 Skin 回落纯白）
     if (beatmap.colors.comboColors.length)
       skin.config.comboColors = [...beatmap.colors.comboColors];
+    // 滑条体默认纯黑；谱面 [Colours] 的 SliderTrackOverride/SliderBorder 优先覆盖
+    skin.config.set("sliderTrackOverride", beatmap.colors.sliderTrackOverride ?? new Color(0x000000));
+    if (beatmap.colors.sliderBorder)
+      skin.config.set("sliderBorder", beatmap.colors.sliderBorder);
 
     const skinT: ISkin
       = (await beatmap.beatmapInfo.ruleset?.createSkinTransformer?.(skin)) ?? skin;

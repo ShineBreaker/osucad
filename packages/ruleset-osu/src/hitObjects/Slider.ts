@@ -23,10 +23,11 @@ export class Slider extends OsuHitObject
 {
   constructor(options: SliderOptions = {})
   {
-    const { repeatCount, expectedDistance, controlPoints, ...rest } = options;
+    const { repeatCount, expectedDistance, controlPoints, nodeSamples, ...rest } = options;
     super(rest);
 
     safeAssign(this, { repeatCount });
+    safeAssign(this, { nodeHitSounds: nodeSamples });
 
     safeAssign(this.path, { expectedDistance, controlPoints });
 
@@ -184,7 +185,7 @@ export class Slider extends OsuHitObject
           startTime: e.time,
           position: this.position,
           stackHeight: this.stackHeight,
-          hitSound: this.nodeHitSounds[0],
+          hitSound: this.nodeHitSounds[0] ?? this.hitSound,
         }));
         break;
       case SliderEventType.Tail:
@@ -193,7 +194,7 @@ export class Slider extends OsuHitObject
           startTime: e.time,
           position: this.endPosition,
           stackHeight: this.stackHeight,
-          hitSound: this.nodeHitSounds[this.spanCount()],
+          hitSound: this.nodeHitSounds[this.spanCount()] ?? this.hitSound,
         }));
         break;
       case SliderEventType.Repeat:
@@ -203,7 +204,7 @@ export class Slider extends OsuHitObject
           position: this.position.add(this.path.positionAt(e.pathProgress)),
           stackHeight: this.stackHeight,
           pathProgress: e.pathProgress,
-          hitSound: this.nodeHitSounds[e.spanIndex + 1],
+          hitSound: this.nodeHitSounds[e.spanIndex + 1] ?? this.hitSound,
         }));
         break;
       }
