@@ -4,7 +4,6 @@ import { AspectContainer, HitResult, SkinnableDrawable } from "@osucad/core";
 import { OsuSkinComponents } from "../../skinning/OsuSkinComponents";
 import type { Spinner } from "../Spinner";
 import { DrawableOsuHitObject } from "./DrawableOsuHitObject";
-import type { ValueChangedEvent } from "@osucad/framework";
 import { Anchor, Axes, Bindable, clamp, Container, type ReadonlyDependencyContainer } from "@osucad/framework";
 import { SpinnerRotationTracker } from "./SpinnerRotationTracker";
 import { OsuAction } from "../../ui/OsuAction";
@@ -151,6 +150,9 @@ export class DrawableSpinner extends DrawableOsuHitObject<Spinner>
 
     this.#spinningSample.rate.value = spinning_sample_modulated_base_frequency + this.progress;
 
+    // isSpinning 事件只在值变化时触发，覆盖不了暂停/恢复——每帧按时钟状态补判定
+    this.#updateSpinningSample();
+
     if (this.handleUserInput)
       this.rotationTracker.tracking = this.rotationTracker.isSpinnableTime && this.#isCorrectButtonPressed() && !this.allJudged;
 
@@ -286,16 +288,16 @@ export class DrawableSpinner extends DrawableOsuHitObject<Spinner>
     this.#maxBonusSample.samples = [new SampleInfo("spinnerbonus-max")];
   }
 
-  #updateSpinningSample(tracking: ValueChangedEvent<boolean>)
+  #updateSpinningSample()
   {
-    if (tracking.value)
+    if (this.isSpinning?.value === true && this.clock?.isRunning !== false)
     {
       if (!this.#spinningSample.isPlaying)
       {
         this.#spinningSample.play();
       }
     }
-    else if(this.#spinningSample.isPlaying)
+    else if (this.#spinningSample.isPlaying)
       this.#spinningSample.stop();
   }
 }

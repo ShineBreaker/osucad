@@ -172,7 +172,9 @@ export class DrawableSlider extends DrawableOsuHitObject<Slider>
 
     this.tracking.value = this.sliderInputManager.tracking;
 
-    if (this.tracking.value && this.time.current >= this.hitObject.startTime)
+    // 时钟暂停（或音轨播完）时也必须停掉循环采样——time.current 冻结在滑条区间内
+    // 时 tracking 仍为 true，若不检查 isRunning，loop 的 AudioBufferSourceNode 会一直放
+    if (this.tracking.value && this.time.current >= this.hitObject.startTime && this.clock?.isRunning !== false)
     {
       if (!this.samples.isPlaying)
         this.samples.play();

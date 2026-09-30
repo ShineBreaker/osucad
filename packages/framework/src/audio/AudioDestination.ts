@@ -15,6 +15,8 @@ export abstract class AudioDestination<T extends IAudioSource = IAudioSource> ex
     source.destination = this;
 
     source.output.connect(this.input);
+
+    this.items.push(source);
   }
 
   disconnect(source: T): boolean
