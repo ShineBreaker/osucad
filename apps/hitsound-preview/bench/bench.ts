@@ -4,25 +4,242 @@
 
 import "@osucad/ruleset-osu/init";
 
-import { LoadState, Renderer, WebGameHost } from "@osucad/framework";
+import { DrawableHitObject } from "@osucad/core";
+import { AudioBufferTrack, FramedClock, LoadState, Renderer, SampleChannel, WebGameHost } from "@osucad/framework";
 import { PreviewGame } from "../src/PreviewGame";
-import osuText from "../src/assets/bench/test.osu?raw";
+import testOsuText from "../src/assets/bench/test.osu?raw";
+import bigOsuText from "../src/assets/bench/big.osu?raw";
 
-// headless 无 WebGL：换成空 renderer（保留 canvas 供 MouseHandler 挂监听、
+// 渲染路径：模块加载时探测 WebGL——可用（headless 需 --use-gl=angle，本机
+// 直连 Intel Arc 真 GPU）则走真渲染管线；不可用（旧 headless 无 SwiftShader）
+// 或 URL 带 ?nogl 时换成空 renderer（保留 canvas 供 MouseHandler 挂监听、
 // resize() 供 renderer.size setter），update/音频/内存全部照常实测。
 import type { WebGLRenderer } from "pixi.js";
-const fakeCanvas = document.createElement("canvas");
-const fakeInternalRenderer = {
-  canvas: fakeCanvas,
-  render() {},
-  resize() {},
-} as unknown as WebGLRenderer;
-Renderer.prototype.init = async function ()
+
+const glProbe = document.createElement("canvas");
+const gl = glProbe.getContext("webgl2") ?? glProbe.getContext("webgl");
+const glRenderer = (() =>
 {
-  Object.defineProperty(this, "canvas", { get: () => fakeCanvas });
-  Object.defineProperty(this, "internalRenderer", { get: () => fakeInternalRenderer });
+  if (!gl) return null;
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  return String(dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+})();
+gl?.getExtension("WEBGL_lose_context")?.loseContext();
+
+const useStubRenderer = !gl || new URLSearchParams(location.search).has("nogl");
+if (useStubRenderer)
+{
+  const fakeCanvas = document.createElement("canvas");
+  const fakeInternalRenderer = {
+    canvas: fakeCanvas,
+    render() {},
+    resize() {},
+  } as unknown as WebGLRenderer;
+  Renderer.prototype.init = async function ()
+  {
+    Object.defineProperty(this, "canvas", { get: () => fakeCanvas });
+    Object.defineProperty(this, "internalRenderer", { get: () => fakeInternalRenderer });
+  };
+  Renderer.prototype.render = () => {};
+}
+
+// ── 音频同步插桩（诊断员方案）：轨域→ctx 域换算 + 采样调度偏差 ──────────
+// #timeAtStart/#contextTimeAtStart 是真私有字段，无法从外部读取；改为在
+// start/stop/seek/rate 的原型包装里维护镜像基线：start 前读 currentTime
+// （未跑时 === #offset，即原生将写入的 #timeAtStart），start 后立即读
+// context.currentTime 作 #contextTimeAtStart（误差仅一次调用开销，µs 级）。
+
+interface TrackBaseline { tAtStart: number; ctxAtStart: number; rate: number }
+
+let activeBaseline: TrackBaseline | null = null;
+let baselineGeneration = 0;
+let baselineChanges = 0;
+let activeCtx: AudioContext | null = null;
+
+/** 轨域时刻 → ctx 域 ms（与 AudioBufferTrack.currentTime 公式互逆）；无基线返回 null */
+function trackTimeToCtxMs(trackTimeMs: number): number | null
+{
+  if (!activeBaseline)
+    return null;
+  const b = activeBaseline;
+  return b.ctxAtStart + (trackTimeMs - b.tAtStart) / b.rate;
+}
+
+interface SyncRecord
+{
+  phase: string;
+  objId: number; // startTime 即本 run 内唯一 id
+  startTime: number;
+  judgeSnapshot: number; // this.time.current
+  trackRealtime: number; // source.currentTime
+  ctxNow: number; // ms
+  when: number | null; // 秒（ctx 域）
+  actualStartCtxMs: number | null;
+  delta: number | null;
+}
+
+interface ChannelEvent
+{
+  phase: string;
+  sampleName: string;
+  whenMs: number | null;
+  ctxNowMs: number;
+  actualStartCtxMs: number;
+  ended: boolean;
+  endedCtxMs: number | null;
+  stopped: boolean;
+}
+
+interface SeekEvent { phase: string; ctxMs: number; to: number }
+
+const syncRecords: SyncRecord[] = [];
+const channelEvents: ChannelEvent[] = [];
+const seekEvents: SeekEvent[] = [];
+const playSamplesStack: SyncRecord[] = [];
+const channelEventOf = new WeakMap<object, ChannelEvent>();
+let currentPhase = "idle";
+
+// hook 1：AudioBufferTrack 基线镜像（start/stop/seek/rate）
+{
+  const proto = AudioBufferTrack.prototype as unknown as Record<string, unknown>;
+  const origStart = proto.start as (this: AudioBufferTrack) => void;
+  const origStop = proto.stop as (this: AudioBufferTrack) => void;
+  const origSeek = proto.seek as (this: AudioBufferTrack, p: number) => boolean;
+  const rateDesc = Object.getOwnPropertyDescriptor(AudioBufferTrack.prototype, "rate")!;
+
+  const refresh = (track: AudioBufferTrack) =>
+  {
+    activeCtx ??= track.context;
+    activeBaseline = { tAtStart: track.currentTime, ctxAtStart: track.context.currentTime * 1000, rate: track.rate };
+    baselineGeneration++;
+    baselineChanges++;
+  };
+
+  proto.start = function (this: AudioBufferTrack)
+  {
+    origStart.call(this);
+    refresh(this);
+  };
+  proto.stop = function (this: AudioBufferTrack)
+  {
+    origStop.call(this);
+    baselineChanges++; // 停下后轨位置冻结（currentTime === #offset），旧换算作废
+  };
+  proto.seek = function (this: AudioBufferTrack, p: number)
+  {
+    const ok = origSeek.call(this, p);
+    seekEvents.push({ phase: currentPhase, ctxMs: this.context.currentTime * 1000, to: p });
+    if (!this.isRunning)
+      baselineChanges++; // 未跑 seek 只改 #offset，等价基线漂移
+    return ok;
+  };
+  Object.defineProperty(AudioBufferTrack.prototype, "rate", {
+    get: rateDesc.get,
+    set(this: AudioBufferTrack, v: number)
+    {
+      rateDesc.set!.call(this, v);
+      if (this.isRunning)
+        refresh(this); // 原实现 stop+start 重启；start 包装已刷新，此处兜底幂等重算
+    },
+  });
+}
+
+// hook 2：DrawableHitObject.playSamples —— 记录期望发声（轨域）与判定帧相位
+const origPlaySamples = DrawableHitObject.prototype.playSamples;
+DrawableHitObject.prototype.playSamples = function (this: never)
+{
+  const self = this as unknown as {
+    hitObject?: { startTime: number };
+    time: { current: number };
+    clock: unknown;
+  };
+  let source: unknown = self.clock;
+  while (source instanceof FramedClock)
+    source = (source as unknown as { source: unknown }).source;
+
+  const startTime = self.hitObject?.startTime ?? -1;
+  const rec: SyncRecord = {
+    phase: currentPhase,
+    objId: startTime,
+    startTime,
+    judgeSnapshot: self.time.current,
+    trackRealtime: source instanceof AudioBufferTrack ? source.currentTime : -1,
+    ctxNow: (activeCtx ??= (source as AudioBufferTrack | null)?.context ?? null)?.currentTime * 1000 ?? -1,
+    when: null,
+    actualStartCtxMs: null,
+    delta: null,
+  };
+  playSamplesStack.push(rec);
+  try
+  {
+    return (origPlaySamples as (this: never) => void).call(this);
+  }
+  finally
+  {
+    playSamplesStack.pop();
+    syncRecords.push(rec);
+  }
 };
-Renderer.prototype.render = () => {};
+
+// hook 3：SampleChannel.play/stop —— 记录实际起播（ctx 域）与 channel 生死。
+// ended 用 addEventListener 旁听（与原生 onended 赋值并存，不改其行为）。
+{
+  const proto = SampleChannel.prototype as unknown as Record<string, unknown>;
+  const origPlay = proto.play as (this: never, when?: number) => boolean;
+  const origStop = proto.stop as (this: never) => void;
+
+  proto.play = function (this: never, when?: number)
+  {
+    const self = this as unknown as { sample: { name: string; context: AudioContext }; output: AudioBufferSourceNode };
+    const ctxNowMs = (activeCtx ??= self.sample.context).currentTime * 1000;
+    const actualStartCtxMs = (when ?? ctxNowMs / 1000) * 1000; // Web Audio 语义：when 缺省=立即
+    const ev: ChannelEvent = {
+      phase: currentPhase,
+      sampleName: self.sample.name,
+      whenMs: when != null ? when * 1000 : null,
+      ctxNowMs,
+      actualStartCtxMs,
+      ended: false,
+      endedCtxMs: null,
+      stopped: false,
+    };
+
+    // 与最近的 playSamples 配对，算 Δ（换算用当前基线；start/seek 后基线已刷新）
+    const rec = playSamplesStack.at(-1);
+    if (rec)
+    {
+      rec.when = when ?? null;
+      rec.actualStartCtxMs = actualStartCtxMs;
+      const expected = trackTimeToCtxMs(rec.startTime);
+      rec.delta = expected != null && rec.startTime >= 0 ? actualStartCtxMs - expected : null;
+    }
+
+    const ok = origPlay.call(this, when);
+    if (ok)
+    {
+      channelEventOf.set(this as object, ev);
+      try
+      {
+        self.output.addEventListener("ended", () =>
+        {
+          ev.ended = true;
+          ev.endedCtxMs = (activeCtx ?? self.sample.context).currentTime * 1000;
+        }, { once: true });
+      }
+      catch { /* output 不支持时跳过旁听 */ }
+      channelEvents.push(ev);
+    }
+    return ok;
+  };
+
+  proto.stop = function (this: never)
+  {
+    const ev = channelEventOf.get(this as object);
+    if (ev)
+      ev.stopped = true;
+    return origStop.call(this);
+  };
+}
 
 const game = new PreviewGame();
 const host = new WebGameHost();
@@ -198,10 +415,12 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function main()
 {
-  const audio = sineWav(110);
-  const osu = new TextEncoder().encode(osuText);
+  // fixture 选择：?fixture=big 用大谱面（1900 物件 / 滑条 60% / 140s 音频）
+  const fixture = new URLSearchParams(location.search).get("fixture") === "big" ? "big" : "test";
+  const audio = sineWav(fixture === "big" ? 140 : 110);
+  const osu = new TextEncoder().encode(fixture === "big" ? bigOsuText : testOsuText);
   const osz = zip([
-    { name: "test.osu", data: osu },
+    { name: `${fixture}.osu`, data: osu },
     { name: "audio.mp3", data: audio },
   ]);
 
@@ -222,6 +441,7 @@ async function main()
 
   async function runPhase(name: string, seconds: number, before?: () => void)
   {
+    currentPhase = name; // 先打标签再跑 before（before 内的 seek 要归入本相）
     before?.();
     frames.length = updates.length = renders.length = 0;
     lastTs = 0;
@@ -237,6 +457,7 @@ async function main()
     }
 
     recording = false;
+    currentPhase = "idle";
     phases[name] = {
       frames: stats(frames),
       update: stats(updates),
@@ -260,12 +481,14 @@ async function main()
   game.onMessage({ type: "hs:control", action: "play" });
   await runPhase("playback", 15);
 
-  // seek 压力：中段随机跳 5 次后继续录
+  // seek 压力：中段随机跳 5 次后继续录（时序保持原样；seek 事件归入 afterSeek 相）
+  currentPhase = "afterSeek";
   for (const t of [30000, 60000, 10000, 80000, 45000])
   {
     game.onMessage({ type: "hs:control", action: "seek", value: t });
     await sleep(80);
   }
+  currentPhase = "idle";
   await runPhase("afterSeek", 8);
 
   // 热更新路径：同包 hs:update（换 skin + 重建/复用屏）
@@ -285,7 +508,70 @@ async function main()
   });
   const updateMs = performance.now() - tUpd;
 
-  await runPhase("afterHotUpdate", 8);
+  // 定向场景 6a：热更新相内模拟宿主侧 buildBytes 冷路径的 100ms 主线程占用，
+  // 观察采样调度 Δ 尖刺与恢复收敛（updateMs 计时已结束，不改既有指标语义）
+  const busy: { startCtxMs: number; endCtxMs: number } = { startCtxMs: -1, endCtxMs: -1 };
+  await runPhase("afterHotUpdate", 8, () =>
+  {
+    setTimeout(() =>
+    {
+      busy.startCtxMs = (activeCtx?.currentTime ?? 0) * 1000;
+      const t0 = performance.now();
+      while (performance.now() - t0 < 100);
+      busy.endCtxMs = (activeCtx?.currentTime ?? 0) * 1000;
+    }, 500);
+  });
+
+  // 定向场景 6c：后台 3s → 回前台，统计后台/恢复期错帧物件数。
+  // ⚠ headless 下不可靠（默认跳过，URL 带 ?bg 才启用）：实测两种后台化手段
+  // （开新 tab 挤后台 / Page.setWebLifecycleState frozen→active）都会把页面打
+  // 入不可恢复的 hidden（active 后 visible 不回来），且污染整 run 数据。
+  // run.mjs 检测 __benchPhase=bgWait 后用 CDP Page.setWebLifecycleState 把本页
+  // frozen 3s 再 active；页面回不来时本相 8s 窗口自然超时。
+  const bg: Record<string, unknown> = { rafFrozen: false, visibilityHidden: false, frozenAtCtxMs: -1, visibleAtCtxMs: -1, enabled: false };
+  {
+    let lastCount = -1;
+    let stallRuns = 0;
+    const bgProbe = setInterval(() =>
+    {
+      if (!bg.rafFrozen)
+      {
+        if (frames.length === lastCount && lastCount >= 0)
+        {
+          if (++stallRuns >= 2)
+          {
+            bg.rafFrozen = true;
+            bg.frozenAtCtxMs = (activeCtx?.currentTime ?? 0) * 1000;
+          }
+        }
+        else
+          stallRuns = 0;
+        lastCount = frames.length;
+      }
+      else if (bg.visibleAtCtxMs === -1 && frames.length > lastCount)
+      {
+        bg.visibleAtCtxMs = (activeCtx?.currentTime ?? 0) * 1000;
+        lastCount = frames.length;
+      }
+    }, 500);
+    const onVis = () =>
+    {
+      if (document.visibilityState === "hidden")
+        bg.visibilityHidden = true;
+    };
+    const bgEnabled = new URLSearchParams(location.search).has("bg");
+    bg.enabled = bgEnabled;
+    await runPhase("background", bgEnabled ? 8 : 0.2, () =>
+    {
+      if (!bgEnabled)
+        return;
+      document.addEventListener("visibilitychange", onVis);
+      (window as unknown as { __benchPhase: string | null }).__benchPhase = "bgWait";
+    });
+    clearInterval(bgProbe);
+    document.removeEventListener("visibilitychange", onVis);
+  }
+  (window as unknown as { __benchPhase: string | null }).__benchPhase = null;
 
   game.onMessage({ type: "hs:control", action: "stats" });
   const statsMsg = await new Promise<{ lookups: number; hits: number }>((resolve) =>
@@ -302,8 +588,102 @@ async function main()
     window.addEventListener("message", onMsg);
   });
 
+  // ── 同步统计：Δ 分布 / 判定帧相位 / 幽灵音 / busy-loop / 后台 ──────────
+  const byPhase = (phase: string) => syncRecords.filter(r => r.delta != null && r.phase === phase);
+  const allDelta = syncRecords.filter(r => r.delta != null);
+  const dist = (rs: typeof syncRecords) =>
+  {
+    const d = rs.map(r => r.delta as number).sort((a, b) => a - b);
+    if (!d.length)
+      return { n: 0 };
+    const pick = (q: number) => d[Math.min(d.length - 1, Math.floor(q * d.length))];
+    return {
+      n: d.length,
+      p50: pick(0.5),
+      p95: pick(0.95),
+      p99: pick(0.99),
+      min: d[0],
+      max: d[d.length - 1],
+      late10: d.filter(v => v > 10).length,
+      early10: d.filter(v => v < -10).length,
+      spike50: d.filter(v => Math.abs(v) > 50).length,
+    };
+  };
+
+  // 判定帧相位（judgeSnapshot - startTime，模型预期 [-帧长,0] 均匀）与 Δ 的相关
+  const judgePhase = allDelta.map(r => r.judgeSnapshot - r.startTime).sort((a, b) => a - b);
+  const jp = judgePhase.length
+    ? {
+        n: judgePhase.length,
+        p5: judgePhase[Math.floor(judgePhase.length * 0.05)],
+        p50: judgePhase[Math.floor(judgePhase.length * 0.5)],
+        p95: judgePhase[Math.floor(judgePhase.length * 0.95)],
+        min: judgePhase[0],
+        max: judgePhase[judgePhase.length - 1],
+        hist: [-70, -60, -50, -40, -30, -20, -10, 0].map(
+          (edge, i, arr) =>
+          {
+            const lo = i === 0 ? -Infinity : arr[i - 1];
+            return judgePhase.filter(v => v > lo && v <= edge).length;
+          }),
+      }
+    : { n: 0 };
+  const pearson = (xs: number[], ys: number[]) =>
+  {
+    if (xs.length < 2)
+      return null;
+    const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+    const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+    let num = 0, dx = 0, dy = 0;
+    for (let i = 0; i < xs.length; i++)
+    {
+      num += (xs[i] - mx) * (ys[i] - my);
+      dx += (xs[i] - mx) ** 2;
+      dy += (ys[i] - my) ** 2;
+    }
+    return dx && dy ? num / Math.sqrt(dx * dy) : null;
+  };
+  const corrDeltaJudge = pearson(
+    allDelta.map(r => r.delta as number),
+    allDelta.map(r => r.judgeSnapshot - r.startTime),
+  );
+
+  // 幽灵音（6b）：afterSeek 相各次 seek 的两种口径
+  let ghostLiteral = 0;
+  let ghostSemantic = 0;
+  for (const sk of seekEvents.filter(s => s.phase === "afterSeek"))
+  {
+    for (const ev of channelEvents)
+    {
+      if (ev.whenMs == null)
+        continue;
+      if (ev.whenMs > sk.ctxMs && ev.whenMs - sk.ctxMs <= 50 && ev.ctxNowMs <= sk.ctxMs + 50 && ev.ended && !ev.stopped)
+        ghostLiteral++;
+      if (ev.whenMs <= sk.ctxMs && ev.ended && !ev.stopped && (ev.endedCtxMs ?? 0) > sk.ctxMs)
+        ghostSemantic++;
+    }
+  }
+
+  // busy-loop（6a）：busy 窗内及恢复期 Δ 序列与收敛点
+  const busyRecords = busy.startCtxMs >= 0
+    ? allDelta.filter(r => r.ctxNow >= busy.startCtxMs - 50 && r.ctxNow <= busy.endCtxMs + 1500)
+    : [];
+  const busyDeltas = busyRecords.map(r => r.delta as number);
+  const afterBusy = busy.endCtxMs >= 0
+    ? allDelta.filter(r => r.ctxNow > busy.endCtxMs)
+    : [];
+  let recoverIdx = afterBusy.findIndex(r => Math.abs(r.delta as number) <= 10);
+
+  // 后台相（6c）
+  const bgDeltas = byPhase("background").map(r => r.delta as number);
+
+  const heapValues = heapSamples.map(h => h.heap);
+  const heapSpanMB = heapValues.length ? (Math.max(...heapValues) - Math.min(...heapValues)) / 1048576 : 0;
+
   (window as unknown as { __benchResult: unknown }).__benchResult = {
     ua: navigator.userAgent,
+    renderer: useStubRenderer ? "stub" : glRenderer,
+    fixture,
     loadMs,
     updateMs,
     heapBeforeLoad,
@@ -313,6 +693,41 @@ async function main()
     phases,
     sampleStats: statsMsg,
     heapSamples,
+    heapSpanMB,
+    sync: {
+      baselineChanges,
+      baselineGeneration,
+      recordsTotal: syncRecords.length,
+      channels: {
+        total: channelEvents.length,
+        ended: channelEvents.filter(e => e.ended).length,
+        stopped: channelEvents.filter(e => e.stopped).length,
+      },
+      combined: dist(allDelta),
+      perPhase: {
+        playback: dist(byPhase("playback")),
+        afterSeek: dist(byPhase("afterSeek")),
+        afterHotUpdate: dist(byPhase("afterHotUpdate")),
+        background: dist(byPhase("background")),
+      },
+      judgePhase: jp,
+      corrDeltaJudge,
+      ghost: { seekCount: seekEvents.filter(s => s.phase === "afterSeek").length, literal: ghostLiteral, semantic: ghostSemantic },
+      busyLoop: {
+        startCtxMs: busy.startCtxMs,
+        endCtxMs: busy.endCtxMs,
+        windowN: busyDeltas.length,
+        spike10: busyDeltas.filter(v => v > 10).length,
+        spike50: busyDeltas.filter(v => v > 50).length,
+        deltaSeq: busyDeltas.slice(0, 30),
+        recoveredAtRecord: recoverIdx,
+      },
+      background: {
+        ...bg,
+        spike50: bgDeltas.filter(v => Math.abs(v) > 50).length,
+        deltaFirst12: bgDeltas.slice(0, 12),
+      },
+    },
   };
 }
 
