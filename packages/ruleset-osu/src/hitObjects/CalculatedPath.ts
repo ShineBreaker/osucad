@@ -28,15 +28,22 @@ export class CalculatedPath
       out.y = 0;
       return out;
     }
-    let i = 0;
     const vertices = this.vertices;
     const cumulativeDistance = this.cumulativeDistance;
-    while (i < cumulativeDistance.length - 1)
+
+    // cumulativeDistance is non-decreasing: binary-search the segment containing d
+    // (equivalent to the previous linear scan).
+    let lo = 0;
+    let hi = cumulativeDistance.length - 1;
+    while (lo < hi)
     {
-      if (cumulativeDistance[i + 1] > d)
-        break;
-      i++;
+      const mid = (lo + hi) >> 1;
+      if (cumulativeDistance[mid + 1] > d)
+        hi = mid;
+      else
+        lo = mid + 1;
     }
+    const i = lo;
 
     const start = vertices[i];
     const end = vertices[i + 1];
@@ -88,25 +95,43 @@ export class CalculatedPath
       return Vec2.lerp(p0, p1, w);
     }
 
-    let i = 0;
-
-
-    for (; i < vertices.length && cumulativeDistance[i] < d0; ++i)
+    // cumulativeDistance is non-decreasing: locate both range ends with binary search
+    // (equivalent to the previous linear scans).
+    let lo = 0;
+    let hi = vertices.length;
+    while (lo < hi)
     {
-      /* empty */
+      const mid = (lo + hi) >> 1;
+      if (cumulativeDistance[mid] < d0)
+        lo = mid + 1;
+      else
+        hi = mid;
     }
+    const i0 = lo;
+
+    lo = i0;
+    hi = vertices.length;
+    while (lo < hi)
+    {
+      const mid = (lo + hi) >> 1;
+      if (cumulativeDistance[mid] <= d1)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    const i1 = lo;
 
     const path: Vec2[] = [];
-    path.push(interpolateVertices(i, d0));
+    path.push(interpolateVertices(i0, d0));
 
-    for (; i < vertices.length && cumulativeDistance[i] <= d1; ++i)
+    for (let i = i0; i < i1; ++i)
     {
       const p = vertices[i];
       if (!Vec2.equals(path[path.length - 1], p))
         path.push(p);
     }
 
-    const p = interpolateVertices(i, d1);
+    const p = interpolateVertices(i1, d1);
     if (!Vec2.equals(path[path.length - 1], p))
       path.push(p);
 

@@ -3,13 +3,15 @@ import type { ITransformable } from "./ITransformable";
 import { Interpolation } from "./Interpolation";
 import { TypedTransform } from "./Transform";
 
+let transformBindableId = 0;
+
 export class TransformBindable<TValue, T extends ITransformable> extends TypedTransform<TValue, T>
 {
   constructor(readonly targetBindable: Bindable<TValue>)
   {
     super();
 
-    this.targetMember = Math.random().toString();
+    this.targetMember = `transform-bindable-${transformBindableId++}`;
   }
 
   override readonly targetMember: string;

@@ -1,4 +1,4 @@
-import type { DrawableSpriteOptions, MouseMoveEvent } from "@osucad/framework";
+import type { MouseMoveEvent } from "@osucad/framework";
 import { Anchor, Axes, clamp, CompositeDrawable, DrawableSprite, FramedClock, InputResampler, Vec2 } from "@osucad/framework";
 import type { Texture } from "pixi.js";
 
@@ -79,42 +79,61 @@ export abstract class CursorTrail extends CompositeDrawable
         return;
       }
 
+      const interval = this.texture.width / 2.5 * this.intervalMultiplier;
+
       for (const pos2 of this.#resampler.addPosition(position))
       {
-        const pos1: Vec2 = this.#lastPosition!;
+        const pos1 = this.#lastPosition!;
 
-        const diff = pos2.sub(pos1);
-        const distance = diff.length();
-        const direction = diff.divF(distance);
+        const dx = pos2.x - pos1.x;
+        const dy = pos2.y - pos1.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const dirX = dx / distance;
+        const dirY = dy / distance;
 
-        const interval = this.texture.width / 2.5 * this.intervalMultiplier;
         const stopAt = distance - (this.avoidDrawingNearCursor ? interval : 0);
 
         for (let d = interval; d < stopAt; d += interval)
         {
-          this.#lastPosition = pos1.add(direction.scale(d));
-          this.#addPart(this.#lastPosition!);
+          this.#addPart(pos1.x + dirX * d, pos1.y + dirY * d);
+
+          // #lastPosition tracks the last emitted point; persistent Vec2 mutated in place.
+          this.#lastPosition!.x = pos1.x + dirX * d;
+          this.#lastPosition!.y = pos1.y + dirY * d;
         }
       }
     }
     else
     {
       this.#lastPosition = position;
-      this.#addPart(position);
+      this.#addPart(position.x, position.y);
     }
   }
 
-  #addPart(localSpacePosition: Vec2)
+  readonly #partFreelist: TrailPart[] = [];
+  static readonly #maxPooledParts = 128;
+
+  #addPart(x: number, y: number)
   {
-    const sprite = new TrailPart(this.#time + 1, {
+    const sprite = this.#partFreelist.pop() ?? new TrailPart({
       texture: this.texture,
-      origin: this.trailOrigin,
-      position: localSpacePosition,
-      scale: this.newPartScale.scale(this.globalPartScale),
       blendMode: "inherit",
     });
 
-    this.addInternal(sprite);
+    sprite.origin = this.trailOrigin;
+
+    sprite.startTime = this.#time + 1;
+    sprite.texture = this.texture;
+    sprite.x = x;
+    sprite.y = y;
+    sprite.alpha = 1;
+    sprite.lifetimeStart = -Number.MAX_VALUE;
+    sprite.lifetimeEnd = Number.MAX_VALUE;
+    sprite.scaleX = this.newPartScale.x * this.globalPartScale;
+    sprite.scaleY = this.newPartScale.y * this.globalPartScale;
+
+    if (sprite.parent === null)
+      this.addInternal(sprite);
   }
 
   #time = 0;
@@ -127,8 +146,13 @@ export abstract class CursorTrail extends CompositeDrawable
 
     const fadeExponent = this.fadeExponent;
 
-    for (const c of this.internalChildren as TrailPart[])
+    // Iterate backwards: expired parts are removed from internalChildren in place
+    // and recycled into the freelist instead of being destroyed.
+    const children = this.internalChildren as TrailPart[];
+    for (let i = children.length - 1; i >= 0; i--)
     {
+      const c = children[i];
+
       const alpha = Math.pow(
           clamp(c.startTime - time, 0, 1),
           fadeExponent,
@@ -136,7 +160,11 @@ export abstract class CursorTrail extends CompositeDrawable
 
       if (alpha <= 0)
       {
-        c.expire();
+        this.removeInternal(c, false);
+        if (this.#partFreelist.length < CursorTrail.#maxPooledParts)
+          this.#partFreelist.push(c);
+        else
+          c.dispose();
         continue;
       }
 
@@ -147,11 +175,5 @@ export abstract class CursorTrail extends CompositeDrawable
 
 class TrailPart extends DrawableSprite
 {
-  constructor(
-    readonly startTime: number,
-    options: DrawableSpriteOptions,
-  )
-  {
-    super(options);
-  }
+  startTime = 0;
 }

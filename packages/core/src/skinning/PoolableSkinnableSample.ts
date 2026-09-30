@@ -10,6 +10,11 @@ export class PoolableSkinnableSample extends SkinReloadableDrawable
   #sampleInfo: ISampleInfo | null = null;
   #activeChannel: SampleChannel | null = null;
 
+  public get sampleInfo()
+  {
+    return this.#sampleInfo;
+  }
+
   public get sample()
   {
     return this.#sample;
@@ -85,7 +90,7 @@ export class PoolableSkinnableSample extends SkinReloadableDrawable
       this.play();
   }
 
-  play()
+  play(when?: number)
   {
     this.flushPendingSkinChanges();
 
@@ -99,7 +104,7 @@ export class PoolableSkinnableSample extends SkinReloadableDrawable
 
     this.#activeChannel = this.#sample.getChannel();
     this.#activeChannel.looping = this.looping;
-    this.#activeChannel.play();
+    this.#activeChannel.play(when);
 
     this.#played = true;
   }

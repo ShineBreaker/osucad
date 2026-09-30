@@ -71,9 +71,10 @@ export abstract class GameHost
     if (!this.root)
       return;
 
-    this.renderer.size = this.getWindowSize();
+    const windowSize = this.getWindowSize();
 
-    this.root.size = this.getWindowSize().componentMax(Vec2.one());
+    this.renderer.size = windowSize;
+    this.root.size = windowSize.componentMax(Vec2.one());
 
     this.clock.processFrame();
 
@@ -149,15 +150,18 @@ export abstract class GameHost
         this.afterRender.emit();
       }
 
-      await new Promise((resolve) =>
-      {
-        requestAnimationFrame(resolve);
-        setTimeout(resolve, 17);
-      });
+      await new Promise<void>(this.#frameWaitExecutor);
     }
 
     this.#performExit();
   }
+
+  // setTimeout 是隐藏标签页下 rAF 被节流的兜底：两个 resolve 先到先赢，Promise 幂等。
+  readonly #frameWaitExecutor = (resolve: (value: void | PromiseLike<void>) => void): void =>
+  {
+    requestAnimationFrame(() => resolve());
+    setTimeout(resolve, 17);
+  };
 
   paused = false;
 

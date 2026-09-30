@@ -22,6 +22,7 @@ export class TargetGroupingTransformTracker
 
   #lastAppliedTransformIndices: Record<string, number> = {};
 
+  #minLastAppliedIndex = 0;
   #targetMembers = new Set<string>();
 
   get targetMembers(): ReadonlySet<string>
@@ -302,16 +303,7 @@ export class TargetGroupingTransformTracker
   {
     if (!targetMember)
     {
-      let min = Number.MAX_SAFE_INTEGER;
-
-      for (const key in this.#lastAppliedTransformIndices)
-      {
-        const value = this.#lastAppliedTransformIndices[key];
-        if (value < min)
-          min = value;
-      }
-
-      return min;
+      return this.#minLastAppliedIndex;
     }
 
     return this.#lastAppliedTransformIndices[targetMember] ?? 0;
@@ -319,6 +311,25 @@ export class TargetGroupingTransformTracker
 
   #setLastAppliedIndex(targetMember: string, index: number)
   {
+    const previous = this.#lastAppliedTransformIndices[targetMember];
+
+    if (previous !== undefined && previous === this.#minLastAppliedIndex && index > this.#minLastAppliedIndex)
+    {
+      // 持有最小值的成员前进了，需要重新扫一遍求新最小值。
+      let min = Number.MAX_SAFE_INTEGER;
+      for (const key in this.#lastAppliedTransformIndices)
+      {
+        const value = key === targetMember ? index : this.#lastAppliedTransformIndices[key];
+        if (value < min)
+          min = value;
+      }
+      this.#minLastAppliedIndex = min;
+    }
+    else if (index < this.#minLastAppliedIndex)
+    {
+      this.#minLastAppliedIndex = index;
+    }
+
     this.#lastAppliedTransformIndices[targetMember] = index;
   }
 
@@ -326,5 +337,7 @@ export class TargetGroupingTransformTracker
   {
     for (const tracked of this.#targetMembers)
       this.#lastAppliedTransformIndices[tracked] = 0;
+
+    this.#minLastAppliedIndex = 0;
   }
 }

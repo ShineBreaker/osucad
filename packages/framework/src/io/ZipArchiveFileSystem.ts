@@ -41,14 +41,25 @@ export class ZipArchiveFileSystem extends EventEmitter<FileSystemEvents> impleme
     return files;
   }
 
+  /**
+   * 惰性解压变体：返回只读 IFileSystem，条目内容到 `read()` 时才解包
+   * （同 create 的语义，命名沿用 createMutable 以区分「解压整个包」）
+   */
+  static async createMutableLazy(buffer: ArrayBuffer | Blob): Promise<ZipArchiveFileSystem>
+  {
+    return this.create(buffer);
+  }
+
   private readonly _entries = new Map<string, ZipArchiveFile>();
 
   private constructor(entries: Record<string, ZipEntry>)
   {
     super();
 
+    // 键统一小写，与 SimpleFileSystem(caseSensitive=false) 的查询语义一致
+    // （entry.path 保留原始大小写）
     for (const key in entries)
-      this._entries.set(key, new ZipArchiveFile(entries[key]));
+      this._entries.set(key.toLowerCase(), new ZipArchiveFile(entries[key]));
   }
 
   public entries(): IFile[]
@@ -58,10 +69,9 @@ export class ZipArchiveFileSystem extends EventEmitter<FileSystemEvents> impleme
 
   get(path: string): IFile | undefined
   {
-    return this._entries.get(path);
+    return this._entries.get(path.trim().toLowerCase());
   }
 }
-
 export class ZipArchiveFile extends EventEmitter<FileEvents> implements IFile
 {
   constructor(
@@ -76,6 +86,12 @@ export class ZipArchiveFile extends EventEmitter<FileEvents> implements IFile
   get path()
   {
     return this.entry.name;
+  }
+
+  /** 解压前大小，供调用方做指纹/缓存判定 */
+  get size()
+  {
+    return this.entry.size;
   }
 
   read(): Promise<ArrayBuffer>

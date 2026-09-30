@@ -185,14 +185,26 @@ export abstract class OsuHitObject extends HitObject
     this.stackHeightBindable.value = value;
   }
 
+  protected get stackOffsetScalar()
+  {
+    return this.stackHeight * this.scale * -6.4;
+  }
+
   get stackOffset()
   {
-    return new Vec2(this.stackHeight * this.scale * -6.4);
+    return new Vec2(this.stackOffsetScalar);
   }
 
   get stackedPosition()
   {
     return this.position.add(this.stackOffset);
+  }
+
+  getStackedPosition(out: Vec2): Vec2
+  {
+    out.x = this.position.x + this.stackOffsetScalar;
+    out.y = this.position.y + this.stackOffsetScalar;
+    return out;
   }
 
   get endPosition()
@@ -203,6 +215,13 @@ export abstract class OsuHitObject extends HitObject
   get stackedEndPosition()
   {
     return this.endPosition.add(this.stackOffset);
+  }
+
+  getStackedEndPosition(out: Vec2): Vec2
+  {
+    out.x = this.endPosition.x + this.stackOffsetScalar;
+    out.y = this.endPosition.y + this.stackOffsetScalar;
+    return out;
   }
 
   // #endregion

@@ -78,10 +78,10 @@ export class Sample extends AudioDestination<SampleChannel> implements IAudioSou
     super.update();
   }
 
-  play()
+  play(when?: number)
   {
     const channel = this.getChannel();
-    channel.play();
+    channel.play(when);
     return channel;
   }
 

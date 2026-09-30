@@ -60,9 +60,7 @@ export class SliderInputManager extends Component
     if (!this.isMouseInFollowArea(true))
       return;
 
-    console.assert(this.#screenSpaceMousePosition !== null);
-
-    const mousePositionInSlider = this.#slider.toLocalSpace(this.#screenSpaceMousePosition!);//.sub(this.#slider.originPosition);
+    const mousePositionInSlider = this.#slider.toLocalSpace(this.#screenSpaceMousePosition!, this.#mouseScratch);//.sub(this.#slider.originPosition);
 
     let allTicksInRange = true;
 
@@ -79,7 +77,7 @@ export class SliderInputManager extends Component
 
       const radius = this.#getFollowRadius(true);
       const objectProgress = clamp((nested.hitObject.startTime - this.#slider.hitObject.startTime) / this.#slider.hitObject.duration, 0, 1);
-      const objectPosition = this.#slider.hitObject.curvePositionAt(objectProgress);
+      const objectPosition = this.#slider.hitObject.curvePositionAt(objectProgress, this.#curveScratch);
 
       if (objectPosition.distanceSq(mousePositionInSlider) > radius * radius)
       {
@@ -138,6 +136,9 @@ export class SliderInputManager extends Component
       nestedObject.missForcefully();
   }
 
+  readonly #mouseScratch = new Vec2();
+  readonly #curveScratch = new Vec2();
+
   isMouseInFollowArea(expanded: boolean)
   {
     if (!this.#screenSpaceMousePosition)
@@ -146,8 +147,8 @@ export class SliderInputManager extends Component
     const radius = this.#getFollowRadius(expanded);
 
     const followProgress = clamp((this.time.current - this.#slider.hitObject.startTime) / this.#slider.hitObject.duration, 0, 1);
-    const followCirclePosition = this.#slider.hitObject.curvePositionAt(followProgress);
-    const mousePositionInSlider = this.#slider.toLocalSpace(this.#screenSpaceMousePosition);//.sub(this.#slider.originPosition);
+    const followCirclePosition = this.#slider.hitObject.curvePositionAt(followProgress, this.#curveScratch);
+    const mousePositionInSlider = this.#slider.toLocalSpace(this.#screenSpaceMousePosition, this.#mouseScratch);//.sub(this.#slider.originPosition);
 
     return Vec2.closerThan(mousePositionInSlider, followCirclePosition, radius);
   }

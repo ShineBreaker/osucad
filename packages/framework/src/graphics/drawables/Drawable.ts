@@ -220,7 +220,6 @@ export abstract class Drawable extends Transformable implements IDisposable, IIn
     this.#y = value.y;
 
     this.invalidate(Invalidation.Transform);
-    this.updateDrawNodeTransform();
   }
 
   #width = 0;
@@ -1413,31 +1412,57 @@ export abstract class Drawable extends Transformable implements IDisposable, IIn
 
   updateDrawNodeTransform()
   {
-    const {
-      drawNode,
-      drawPosition,
-      anchorPosition,
-      drawScale,
-      originPosition,
-    } = this;
+    const anchor = this.#anchor;
+    const origin = this.#origin;
 
-    let x = drawPosition.x + anchorPosition.x;
-    let y = drawPosition.y + anchorPosition.y;
+    const anchorX = (anchor & Anchor.x1) !== 0 ? 0.5 : (anchor & Anchor.x2) !== 0 ? 1 : 0;
+    const anchorY = (anchor & Anchor.y1) !== 0 ? 0.5 : (anchor & Anchor.y2) !== 0 ? 1 : 0;
 
-    if (this.#parent)
+    const originX = (origin & Anchor.x1) !== 0 ? 0.5 : (origin & Anchor.x2) !== 0 ? 1 : 0;
+    const originY = (origin & Anchor.y1) !== 0 ? 0.5 : (origin & Anchor.y2) !== 0 ? 1 : 0;
+
+    // scalar equivalent of `drawPosition` (applyRelativeAxes + margin) without allocating a Vec2.
+    let x = this.#x + this.#margin.left;
+    let y = this.#y + this.#margin.top;
+
+    const parent = this.#parent;
+    if (parent)
     {
-      const padding = this.#parent.padding;
+      const parentChildSizeX = parent.drawSize.x - parent.padding.totalHorizontal;
+      const parentChildSizeY = parent.drawSize.y - parent.padding.totalVertical;
 
-      x += padding.left;
-      y += padding.top;
+      const relativePositionAxes = this.#relativePositionAxes;
+      if (relativePositionAxes !== Axes.None)
+      {
+        const relativeChildSize = parent.relativeChildSize;
+        const factorX = parentChildSizeX / relativeChildSize.x;
+        const factorY = parentChildSizeY / relativeChildSize.y;
+
+        if (relativePositionAxes & Axes.X)
+          x = this.#x * factorX + this.#margin.left;
+        if (relativePositionAxes & Axes.Y)
+          y = this.#y * factorY + this.#margin.top;
+      }
+
+      x += anchorX * parentChildSizeX + parent.padding.left;
+      y += anchorY * parentChildSizeY + parent.padding.top;
     }
+    else
+    {
+      x += anchorX;
+      y += anchorY;
+    }
+
+    const drawSize = this.drawSize;
+
+    const drawNode = this.drawNode;
 
     drawNode._position._x = x;
     drawNode._position._y = y;
-    drawNode.pivot._x = originPosition.x;
-    drawNode.pivot._y = originPosition.y;
-    drawNode._scale._x = drawScale.x;
-    drawNode._scale._y = drawScale.y;
+    drawNode.pivot._x = originX * drawSize.x;
+    drawNode.pivot._y = originY * drawSize.y;
+    drawNode._scale._x = this.#scale.x;
+    drawNode._scale._y = this.#scale.y;
 
     drawNode._onUpdate();
   }

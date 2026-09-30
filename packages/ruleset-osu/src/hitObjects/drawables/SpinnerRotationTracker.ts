@@ -112,6 +112,6 @@ export class SpinnerRotationTracker extends CircularContainer
   {
     super.dispose(isDisposing);
 
-    this.#drawableSpinner.hitObjectApplied.addListener(this.#resetState, this);
+    this.#drawableSpinner.hitObjectApplied.removeListener(this.#resetState, this);
   }
 }

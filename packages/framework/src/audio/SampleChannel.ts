@@ -17,9 +17,23 @@ export class SampleChannel extends AudioComponent implements IAudioSource
   set looping(value: boolean)
   {
     this.#source.loop = value;
+
+    if (value)
+      this.#bindRate();
   }
 
-  readonly #rate: Bindable<number>;
+  #rate?: Bindable<number>;
+
+  // 一次性采样只占一次播放的速率快照；仅 looping channel 需要跟随
+  // sample.rate 的后续变化（对应 lazer 的持续变调），少建一份绑定
+  #bindRate()
+  {
+    if (!this.#rate)
+    {
+      this.#rate = this.sample.rate.getBoundCopy();
+      this.#rate.bindValueChanged(rate => this.#source.playbackRate.value = rate.value, true);
+    }
+  }
 
   readonly #source: AudioBufferSourceNode;
 
@@ -40,11 +54,11 @@ export class SampleChannel extends AudioComponent implements IAudioSource
 
     this.#source.onended = this.#onEnded.bind(this);
 
-    this.#rate = sample.rate.getBoundCopy();
-    this.#rate.bindValueChanged(rate => this.#source.playbackRate.value = rate.value, true);
+    if (looping)
+      this.#bindRate();
   }
 
-  public play()
+  public play(when?: number)
   {
     if (this.isDisposed)
       throw new Error("Cannot not play disposed sample");
@@ -52,7 +66,10 @@ export class SampleChannel extends AudioComponent implements IAudioSource
     if (this.#played)
       return false;
 
-    this.#source.start();
+    if (!this.looping)
+      this.#source.playbackRate.value = this.sample.rate.value;
+
+    this.#source.start(when);
     this.onPlay.emit(this);
 
     this.#playing = true;
@@ -110,7 +127,7 @@ export class SampleChannel extends AudioComponent implements IAudioSource
 
     this.stop();
 
-    this.#rate.unbindAll();
+    this.#rate?.unbindAll();
 
     super.dispose();
   }

@@ -12,9 +12,9 @@ export class DrawableSample extends CompositeDrawable
     sample.rate.bindTo(this.rate);
   }
 
-  play()
+  play(when?: number)
   {
-    this.getChannel().play();
+    this.getChannel().play(when);
   }
 
   getChannel()

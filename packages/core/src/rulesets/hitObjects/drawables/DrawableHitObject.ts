@@ -1,5 +1,5 @@
 import type { ReadonlyDependencyContainer } from "@osucad/framework";
-import { Action, Bindable, provideSelf, resolved } from "@osucad/framework";
+import { Action, AudioBufferTrack, Bindable, FramedClock, provideSelf, resolved } from "@osucad/framework";
 import { Color } from "pixi.js";
 import { PoolableDrawableWithLifetime } from "../../../pooling/PoolableDrawableWithLifetime";
 import type { IAnimationTimeReference } from "../../../skinning/IAnimationTimeReference";
@@ -426,7 +426,21 @@ export class DrawableHitObject<out T extends HitObject = HitObject>
 
   protected playSamples()
   {
-    this.samples?.play();
+    let when: number | undefined;
+
+    // 时钟源为音频轨时把采样调度到命中时刻对应的 AudioContext 时间，
+    // 消除帧边界起播的量化抖动；暂停/无轨/非正常速率回落即时播放
+    let source: unknown = this.clock;
+    while (source instanceof FramedClock)
+      source = source.source;
+
+    if (source instanceof AudioBufferTrack && source.isRunning && source.rate > 0 && this.hitObject)
+    {
+      const delta = this.hitObject.startTime - source.currentTime;
+      when = source.context.currentTime + Math.max(0, delta) / source.rate / 1000;
+    }
+
+    this.samples?.play(when);
   }
 
   stopAllSamples()

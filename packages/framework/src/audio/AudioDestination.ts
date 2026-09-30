@@ -29,7 +29,17 @@ export abstract class AudioDestination<T extends IAudioSource = IAudioSource> ex
 
     source.destination = undefined;
 
-    source.output.disconnect(this.input);
+    this.items.splice(index, 1);
+
+    try
+    {
+      source.output.disconnect(this.input);
+    }
+    catch
+    {
+      // 边可能已被外部（如 track.output.disconnect()）断开——
+      // WebAudio 对已不存在的连接抛 InvalidAccessError，状态修正照常完成
+    }
 
     return true;
   }
@@ -44,10 +54,8 @@ export abstract class AudioDestination<T extends IAudioSource = IAudioSource> ex
 
       if (!item.isAlive)
       {
-        console.assert(item.destination === this);
-
-        item.output.disconnect(this.input);
-        this.items.splice(i--, 1);
+        this.disconnect(item);
+        i--;
         continue;
       }
 

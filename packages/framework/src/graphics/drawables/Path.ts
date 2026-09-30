@@ -4,7 +4,6 @@ import type { Vec2 } from "../../math/Vec2";
 import type { Container as PIXIContainer } from "pixi.js";
 import { AlphaFilter, Mesh } from "pixi.js";
 import { Cached } from "../../caching/Cached";
-import { Line } from "../../math/Line";
 import { Drawable } from "./Drawable";
 import { PathGeometry } from "./PathGeometry";
 import { PathGeometryBuilder } from "./PathGeometryBuilder";
@@ -32,30 +31,23 @@ export class Path extends Drawable
     this.#segmentsCache.invalidate();
   }
 
-  readonly #segmentsBacking: Line[] = [];
+  readonly #geometryBuilder = new PathGeometryBuilder(10, []);
   readonly #segmentsCache = new Cached();
 
-  #generateSegments(): Line[]
+  #generateSegments()
   {
-    this.#segmentsBacking.length = Math.max(0, this.vertices.length - 1);
+    const builder = this.#geometryBuilder;
+    builder.radius = this.pathRadius;
+    builder.vertices = this.#vertices;
+    builder.build();
 
-    if (this.#vertices.length > 1)
-    {
-      for (let i = 0; i < this.#vertices.length - 1; ++i)
-        this.#segmentsBacking[i] = new Line(this.#vertices[i], this.#vertices[i + 1]);
-    }
-
-    const { positions, texCoords, indices } = new PathGeometryBuilder(
-        this.pathRadius,
-        this.#segmentsBacking,
-    ).build();
-
-    this.#geometry.positions = new Float32Array(positions);
-    this.#geometry.texCoords = new Float32Array(texCoords);
-    this.#geometry.indices = new Uint32Array(indices);
+    // Subarray views pin the exact active range without copying; Buffer.setDataWithSize
+    // uploads only the view range and Geometry.indexSize reads the view's length.
+    this.#geometry.positions = builder.positions.subarray(0, builder.positionsLength);
+    this.#geometry.texCoords = builder.texCoords.subarray(0, builder.texCoordsLength);
+    this.#geometry.indices = builder.indices.subarray(0, builder.indicesLength);
 
     this.#segmentsCache.validate();
-    return this.#segmentsBacking;
   }
 
   get texture()

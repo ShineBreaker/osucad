@@ -3,7 +3,8 @@ import { ScheduledDelegate } from "./ScheduledDelegate";
 
 export class Scheduler
 {
-  readonly #runQueue: ScheduledDelegate[] = [];
+  readonly #runQueue: (ScheduledDelegate | null)[] = [];
+  #runQueueHead = 0;
   readonly #timedTasks: ScheduledDelegate[] = [];
   readonly #perUpdateTasks: ScheduledDelegate[] = [];
 
@@ -28,7 +29,7 @@ export class Scheduler
 
   get totalPendingTasks(): number
   {
-    return this.#runQueue.length + this.#timedTasks.length + this.#perUpdateTasks.length;
+    return this.#runQueue.length - this.#runQueueHead + this.#timedTasks.length + this.#perUpdateTasks.length;
   }
 
   constructor(clock: IClock | null = new StopwatchClock())
@@ -55,14 +56,12 @@ export class Scheduler
 
   readonly #tasksToSchedule: ScheduledDelegate[] = [];
 
-  readonly #tasksToRemove: ScheduledDelegate[] = [];
-
   update(): number
   {
     this.#queueTimedTasks();
     this.#queuePerUpdateTasks();
 
-    const countToRun = this.#runQueue.length;
+    const countToRun = this.#runQueue.length - this.#runQueueHead;
 
     let countRun = 0;
 
@@ -90,13 +89,15 @@ export class Scheduler
 
       const tasks = this.#timedTasks;
 
+      // single-pass compaction: due tasks are dropped from #timedTasks in place
+      // (repeating ones are re-queued via #tasksToSchedule afterwards).
+      let writeIndex = 0;
+
       for (let i = 0, len = tasks.length; i < len; i++)
       {
         const sd = tasks[i];
         if (sd.executionTime <= currentTimeLocal)
         {
-          this.#tasksToRemove.push(sd);
-
           if (sd.cancelled)
             continue;
 
@@ -118,18 +119,14 @@ export class Scheduler
 
           if (!sd.completed)
             this.#enqueue(sd);
+
+          continue;
         }
+
+        tasks[writeIndex++] = sd;
       }
 
-      const removeTasks = this.#tasksToRemove;
-      for (let i = 0, len = removeTasks.length; i < len; i++)
-      {
-        const t = removeTasks[i];
-        const index = this.#timedTasks.indexOf(t);
-        this.#timedTasks.splice(index, 1);
-      }
-
-      this.#tasksToRemove.length = 0;
+      tasks.length = writeIndex;
 
       this.#timedTasks.push(...this.#tasksToSchedule);
 
@@ -159,9 +156,33 @@ export class Scheduler
     }
   }
 
+  #findInRunQueue(predicate: (sd: ScheduledDelegate) => boolean): ScheduledDelegate | undefined
+  {
+    for (let i = this.#runQueueHead; i < this.#runQueue.length; i++)
+    {
+      const sd = this.#runQueue[i];
+      if (sd !== null && predicate(sd))
+        return sd;
+    }
+
+    return undefined;
+  }
+
   #getNextTask(): ScheduledDelegate | null
   {
-    return this.#runQueue.shift() ?? null;
+    if (this.#runQueueHead >= this.#runQueue.length)
+      return null;
+
+    const task = this.#runQueue[this.#runQueueHead];
+    this.#runQueue[this.#runQueueHead++] = null!;
+
+    if (this.#runQueueHead === this.#runQueue.length)
+    {
+      this.#runQueue.length = 0;
+      this.#runQueueHead = 0;
+    }
+
+    return task;
   }
 
   cancelDelayedTasks()
@@ -217,7 +238,7 @@ export class Scheduler
   {
     const receiver = typeof receiverOrDebounceTime !== "number" ? receiverOrDebounceTime : undefined;
 
-    const existing = this.#runQueue.find(sd => sd.task === task && sd.receiver === receiver);
+    const existing = this.#findInRunQueue(sd => sd.task === task && sd.receiver === receiver);
     if (existing)
     {
       existing.cancel();
@@ -233,7 +254,7 @@ export class Scheduler
 
   addOnce<T>(task: () => void, receiver?: T): boolean
   {
-    const existing = this.#runQueue.find(sd => sd.task === task);
+    const existing = this.#findInRunQueue(sd => sd.task === task);
 
     if (existing)
     {

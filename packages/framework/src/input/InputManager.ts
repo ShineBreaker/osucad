@@ -381,9 +381,10 @@ export abstract class InputManager extends Container implements IInputStateChang
     const lastHoverHandledDrawable = this.#hoverHandledDrawable;
     this.#hoverHandledDrawable = null;
 
-    this.#lastHoverHandledDrawables = [...this.#hoveredDrawables];
-
-    this.#hoveredDrawables = [];
+    const last = this.#lastHoverHandledDrawables;
+    this.#lastHoverHandledDrawables = this.#hoveredDrawables;
+    this.#hoveredDrawables = last;
+    last.length = 0;
 
     if (this.handleHoverEvents)
     {

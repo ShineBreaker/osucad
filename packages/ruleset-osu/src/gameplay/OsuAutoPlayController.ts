@@ -42,15 +42,22 @@ export class OsuAutoPlayController extends AutoPlayController<DrawableOsuHitObje
 
       const spinCount = Math.floor(current.rotationTracker.rotation / Math.PI + 0.5);
 
-      const scaleX = 0.5 + random(new Vec2(spinCount, 0)) * 0.4;
-      const scaleY = 0.8 + random(new Vec2(spinCount, 1)) * 0.6;
+      const scaleX = 0.5 + random(spinCount, 0) * 0.4;
+      const scaleY = 0.8 + random(spinCount, 1) * 0.6;
 
-      const position = new Vec2(256, 192).add(
-          new Vec2(0, 120)
-            .rotate(angle)
-            .mul({ x: scaleX, y: scaleY })
-            .rotate(Math.PI * (0.2 + random(new Vec2(spinCount, 12)) * 0.1)),
-      );
+      const rotation = Math.PI * (0.2 + random(spinCount, 12) * 0.1);
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const cosR = Math.cos(rotation);
+      const sinR = Math.sin(rotation);
+
+      // (0,120).rotate(angle).mul(scaleX,scaleY).rotate(rotation), inlined to avoid Vec2 churn
+      const vx = -120 * sin * scaleX;
+      const vy = 120 * cos * scaleY;
+
+      const position = scratchA;
+      position.x = 256 + vx * cosR - vy * sinR;
+      position.y = 192 + vx * sinR + vy * cosR;
 
       yield this.moveCursor(position, {
         frequency: 4 + Math.random(),
@@ -70,46 +77,62 @@ export class OsuAutoPlayController extends AutoPlayController<DrawableOsuHitObje
     else if (current && next)
     {
       const prevPosition = this.getEndPositionWithLeniency(current);
-      const nextPosition = next.hitObject.stackedPosition;
-      const delta = nextPosition.sub(prevPosition);
+      const nextPosition = next.hitObject.getStackedPosition(scratchB);
+      const deltaX = nextPosition.x - prevPosition.x;
+      const deltaY = nextPosition.y - prevPosition.y;
 
       const startTime = this.getLooseEndTime(current.hitObject);
       const endTime = next.hitObject.startTime;
       const duration = endTime - startTime;
 
-      let position = Interpolation.valueAt(
-          this.time.current,
-          prevPosition.add(nextPosition).scale(0.5),
-          nextPosition,
-          startTime,
-          startTime + Math.min(200, duration * 0.75),
-      );
+      const midX = (prevPosition.x + nextPosition.x) * 0.5;
+      const midY = (prevPosition.y + nextPosition.y) * 0.5;
 
-      const mostlyHorizontal = Math.abs(delta.x) > Math.abs(delta.y);
+      // Interpolation.valueAt with default (linear) easing, inlined into scratchA.
+      const blendEnd = startTime + Math.min(200, duration * 0.75);
+      const position = scratchA;
+      if (this.time.current < startTime)
+      {
+        position.x = midX;
+        position.y = midY;
+      }
+      else if (this.time.current >= blendEnd)
+      {
+        position.x = nextPosition.x;
+        position.y = nextPosition.y;
+      }
+      else
+      {
+        const t = (this.time.current - startTime) / (blendEnd - startTime);
+        position.x = midX + (nextPosition.x - midX) * t;
+        position.y = midY + (nextPosition.y - midY) * t;
+      }
+
+      const mostlyHorizontal = Math.abs(deltaX) > Math.abs(deltaY);
 
       const completionProgress = clamp((this.time.current - current.hitObject.endTime) / (next.hitObject.startTime - current.hitObject.endTime), 0, 1);
 
       let frequencyMultiplier = 1;
 
-      if (delta.length() > 125)
+      const deltaLength = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+      if (deltaLength > 125)
       {
         const curveFactor = Math.pow(1 - completionProgress, 2);
 
         if (mostlyHorizontal)
-          position.y -= curveFactor * delta.length() * 0.2;
+          position.y -= curveFactor * deltaLength * 0.2;
         else
-          position.x -= curveFactor * delta.length() * 0.15;
+          position.x -= curveFactor * deltaLength * 0.15;
 
 
         frequencyMultiplier *= 1.5;
       }
 
-      position = position.add(new Vec2(
-          (random(current.hitObject.position) - 0.5) * current.hitObject.radius * 0.25,
-          (random(current.hitObject.position.add({ x: 1, y: 0 })) - 0.5) * current.hitObject.radius * 0.25,
-      ));
+      const ho = current.hitObject;
+      position.x += (random(ho.position.x, ho.position.y) - 0.5) * ho.radius * 0.25;
+      position.y += (random(ho.position.x + 1, ho.position.y) - 0.5) * ho.radius * 0.25;
 
-      const distanceFactor = 1 + Math.log(delta.length() + 1) * 0.05;
+      const distanceFactor = 1 + Math.log(deltaLength + 1) * 0.05;
 
       const frequency = duration > 0
           ? (1000 / duration) * 0.75 * distanceFactor * frequencyMultiplier
@@ -132,7 +155,7 @@ export class OsuAutoPlayController extends AutoPlayController<DrawableOsuHitObje
     }
     else
     {
-      const position = next?.hitObject.stackedPosition ?? this.cursorPos.current;
+      const position = next ? next.hitObject.getStackedPosition(scratchA) : this.cursorPos.current;
 
       yield this.moveCursor(position, {
         frequency: 2,
@@ -184,35 +207,37 @@ export class OsuAutoPlayController extends AutoPlayController<DrawableOsuHitObje
     if (hitObject instanceof DrawableSlider)
       return this.getSliderPositionExact(hitObject, time);
 
-    return hitObject.hitObject.stackedEndPosition;
+    return hitObject.hitObject.getStackedEndPosition(scratchC);
   }
 
   protected getSliderPosition(slider: DrawableSlider, time = this.time.current): Vec2
   {
-    return Vec2.lerp(
-        this.getSliderPositionExact(slider, time),
-        this.getSliderPositionLoose(slider, time),
-        0.5,
-    );
+    const exact = this.getSliderPositionExact(slider, time);
+    const loose = this.getSliderPositionLoose(slider, time);
+
+    exact.x += (loose.x - exact.x) * 0.5;
+    exact.y += (loose.y - exact.y) * 0.5;
+    return exact;
   }
 
   protected getSliderPositionExact(slider: DrawableSlider, time = this.time.current): Vec2
   {
     const completionProgress = clamp((time - slider.hitObject.startTime) / slider.hitObject.duration, 0, 1);
 
-    const curvePosition = slider.hitObject.curvePositionAt(completionProgress);
-
-    return slider.hitObject.stackedPosition.add(curvePosition);
+    const out = slider.hitObject.getStackedPosition(scratchD);
+    out.addInPlace(slider.hitObject.curvePositionAt(completionProgress, scratchF));
+    return out;
   }
 
   protected getSliderPositionLoose(slider: DrawableSlider, time = this.time.current)
   {
-    const nested = slider.hitObject.nestedHitObjects.toSorted((a, b) => a.startTime - b.startTime) as OsuHitObject[];
+    // nestedHitObjects are already startTime-sorted (HitObject.applyDefaults sorts them).
+    const nested = slider.hitObject.nestedHitObjects as readonly OsuHitObject[];
     if (time < nested[0].startTime)
-      return nested[0].stackedPosition;
+      return nested[0].getStackedPosition(scratchE);
 
     if (time > nested[nested.length - 1].endTime)
-      return nested[nested.length - 1].stackedEndPosition;
+      return nested[nested.length - 1].getStackedEndPosition(scratchE);
 
     for (let i = 1; i < nested.length; i++)
     {
@@ -222,15 +247,24 @@ export class OsuAutoPlayController extends AutoPlayController<DrawableOsuHitObje
       if (i === nested.length - 1)
       {
         const radius = curr.radius * DrawableSliderBall.FOLLOW_AREA;
-        if (prev.stackedEndPosition.distance(curr.stackedPosition) < radius)
+        if (prev.getStackedEndPosition(scratchF).distance(curr.getStackedPosition(scratchG)) < radius)
         {
-          return prev.stackedEndPosition;
+          return prev.getStackedEndPosition(scratchE);
         }
       }
 
       if (time >= prev.startTime && time < curr.startTime)
       {
-        return Interpolation.valueAt(time, prev.stackedPosition, curr.stackedPosition, prev.startTime, curr.startTime);
+        // Interpolation.valueAt with default (linear) easing, inlined into scratchE.
+        const out = prev.getStackedPosition(scratchE);
+        const prevX = out.x;
+        const prevY = out.y;
+        curr.getStackedPosition(scratchF);
+
+        const t = (time - prev.startTime) / (curr.startTime - prev.startTime);
+        out.x = prevX + (scratchF.x - prevX) * t;
+        out.y = prevY + (scratchF.y - prevY) * t;
+        return out;
       }
     }
 
@@ -243,9 +277,17 @@ export class OsuAutoPlayController extends AutoPlayController<DrawableOsuHitObje
   }
 }
 
-function random(st: Vec2): number
-{
-  const x = Math.sin(new Vec2(12.9898, 78.233).dot(st)) * 43758.5453123;
+const scratchA = new Vec2();
+const scratchB = new Vec2();
+const scratchC = new Vec2();
+const scratchD = new Vec2();
+const scratchE = new Vec2();
+const scratchF = new Vec2();
+const scratchG = new Vec2();
 
-  return x - Math.floor(x);
+function random(x: number, y: number): number
+{
+  const v = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453123;
+
+  return v - Math.floor(v);
 }

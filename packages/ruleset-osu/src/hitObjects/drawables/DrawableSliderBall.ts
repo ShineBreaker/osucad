@@ -1,6 +1,6 @@
 import { ISkinSource, SkinnableDrawable } from "@osucad/core";
 import type { ReadonlyDependencyContainer } from "@osucad/framework";
-import { Anchor, Axes, CompositeDrawable, computed, resolved } from "@osucad/framework";
+import { Anchor, Axes, CompositeDrawable, computed, resolved, Vec2 } from "@osucad/framework";
 import { OsuSkinComponents } from "../../skinning/OsuSkinComponents";
 import { OsuHitObject } from "../OsuHitObject";
 import { DrawableSlider } from "./DrawableSlider";
@@ -50,18 +50,26 @@ export class DrawableSliderBall extends CompositeDrawable
     super.applyTransformsAt(time, false);
   }
 
+  readonly #positionScratch = new Vec2();
+  readonly #aheadScratch = new Vec2();
+
   updateProgress(completionProgress: number)
   {
     const slider = this.#drawableSlider.hitObject!;
     if (slider.spanCount() > 1 && this.sliderBallFlip.value == false)
       this.ball.scaleX = slider.spanAt(completionProgress) % 2 == 1 ? -1 : 1;
 
-    const position = this.position = slider.curvePositionAt(completionProgress);
-    const diff = position.sub(slider.curvePositionAt(Math.min(1, completionProgress + 0.1 / slider.path.expectedDistance)));
+    const position = this.#positionScratch;
+    slider.curvePositionAt(completionProgress, position);
+    this.position = position;
 
-    if (diff.length() < 0.05)
+    const ahead = slider.curvePositionAt(Math.min(1, completionProgress + 0.1 / slider.path.expectedDistance), this.#aheadScratch);
+    const dx = position.x - ahead.x;
+    const dy = position.y - ahead.y;
+
+    if (dx * dx + dy * dy < 0.05 * 0.05)
       return;
 
-    this.ball.rotation = -Math.atan2(diff.x, diff.y) - Math.PI * 0.5;
+    this.ball.rotation = -Math.atan2(dx, dy) - Math.PI * 0.5;
   }
 }

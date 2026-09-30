@@ -87,7 +87,7 @@ export class SkinnableSound extends SkinReloadableDrawable
       s.looping = value;
   }
 
-  play()
+  play(when?: number)
   {
     this.flushPendingSkinChanges();
 
@@ -96,7 +96,7 @@ export class SkinnableSound extends SkinReloadableDrawable
     for (const c  of this.#samplesContainer.children)
     {
       if (this.playWhenZeroVolume || c.volume.value > 0)
-        c.play();
+        c.play(when);
     }
   }
 
@@ -121,20 +121,28 @@ export class SkinnableSound extends SkinReloadableDrawable
     if (wasPlaying && this.looping)
       this.stop();
 
-    // Remove all pooled samples (return them to the pool), and dispose the rest.
-    this.#samplesContainer.removeRange(this.#samplesContainer.children.filter(s => s.isInPool), false);
-    this.#samplesContainer.clear();
+    // 按 ISampleInfo.equals 复用已在容器中的实例，采样集不变时零分配、
+    // 也不触发换肤重查（原实现每次全量 clear+新建 PoolableSkinnableSample）
+    const remaining = [...this.#samplesContainer.children];
 
-    for (const s of this.#samples)
+    for (const info of this.#samples)
     {
-      const sample = /* TODO: samplePool?.GetPooledSample(s) ?? */ new PoolableSkinnableSample(s);
+      let sample = remaining.find(s => s.sampleInfo?.equals(info));
+
+      if (sample)
+        remaining.splice(remaining.indexOf(sample), 1);
+      else
+      {
+        this.#samplesContainer.add(sample = new PoolableSkinnableSample(info));
+        sample.rate.bindTo(this.rate);
+      }
+
       sample.looping = this.looping;
-      sample.volume.value = Math.max(s.volume, this.minimumSampleVolume) / 100.0;
-
-      sample.rate.bindTo(this.rate);
-
-      this.#samplesContainer.add(sample);
+      sample.volume.value = Math.max(info.volume, this.minimumSampleVolume) / 100.0;
     }
+
+    for (const s of remaining)
+      this.#samplesContainer.remove(s, !s.isInPool);
 
     if (wasPlaying && this.looping)
       this.play();

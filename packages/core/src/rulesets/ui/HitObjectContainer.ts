@@ -35,8 +35,24 @@ export class HitObjectContainer extends PooledDrawableWithLifetimeContainer<HitO
 
   get aliveObjects()
   {
-    return [...this.aliveEntries.values()].sort(compareStartTime);
+    // Zero-alloc ordered view: internalChildren is sorted by depth (= startTime)
+    // descending, so reverse iteration yields startTime-ascending order.
+    // The returned buffer is reused every call — treat it as transient, do not retain.
+    const alive = this.#aliveObjects;
+    alive.length = 0;
+
+    const children = this.internalChildren;
+    for (let i = children.length - 1; i >= 0; i--)
+    {
+      const drawable = children[i] as DrawableHitObject;
+      if (drawable.entry !== null && this.aliveEntries.has(drawable.entry))
+        alive.push(drawable);
+    }
+
+    return alive;
   }
+
+  readonly #aliveObjects: DrawableHitObject[] = [];
 
   constructor()
   {

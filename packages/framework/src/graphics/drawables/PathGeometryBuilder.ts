@@ -1,131 +1,178 @@
-import { Line } from "../../math/Line";
 import { Vec2 } from "../../math/Vec2";
 
 const max_res = 24;
 
+/**
+ * Builds path geometry for consecutive vertex pairs without allocating.
+ *
+ * Buffers are grow-only: `positions`/`texCoords`/`indices` always expose the full
+ * backing store; `positionsLength`/`texCoordsLength`/`indicesLength` hold the
+ * number of valid elements written by the last {@link build} call.
+ */
 export class PathGeometryBuilder
 {
   constructor(
-    readonly radius: number,
-    readonly segments: readonly Line[],
+    public radius: number,
+    public vertices: readonly Vec2[],
   )
   {
   }
 
   index = 0;
 
-  indices: number[] = [];
-  positions: number[] = [];
-  texCoords: number[] = [];
+  indices: Uint32Array = new Uint32Array(0);
+  positions: Float32Array = new Float32Array(0);
+  texCoords: Float32Array = new Float32Array(0);
+
+  positionsLength = 0;
+  texCoordsLength = 0;
+  indicesLength = 0;
+
+  // Double-buffered: prevSegment* must stay valid while the current iteration
+  // rewrites its own slots, so alternating parity is required.
+  readonly #linesL: [MutableLine, MutableLine] = [new MutableLine(), new MutableLine()];
+  readonly #linesR: [MutableLine, MutableLine] = [new MutableLine(), new MutableLine()];
+  readonly #tmpLineA = new MutableLine();
+  readonly #tmpLineB = new MutableLine();
 
   build()
   {
-    const { segments, radius } = this;
+    const { vertices, radius } = this;
 
-    let prevSegmentLeft: Line | undefined;
-    let prevSegmentRight: Line | undefined;
+    this.positionsLength = 0;
+    this.texCoordsLength = 0;
+    this.indicesLength = 0;
+    this.index = 0;
 
-    for (let i = 0; i < segments.length; i++)
+    const linesL = this.#linesL;
+    const linesR = this.#linesR;
+    let prevSegmentLeft: MutableLine | undefined;
+    let prevSegmentRight: MutableLine | undefined;
+    let prevTheta = 0;
+
+    for (let i = 0; i < vertices.length - 1; i++)
     {
-      const currSegment = segments[i];
+      const a = vertices[i];
+      const b = vertices[i + 1];
+      const segmentLeft = linesL[i & 1];
+      const segmentRight = linesR[i & 1];
 
-      let ortho = currSegment.orthogonalDirection;
-      if (Number.isNaN(ortho.x) || Number.isNaN(ortho.y))
-        ortho = new Vec2(0, 1);
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const theta = Math.atan2(dy, dx);
+      const len = Math.sqrt(dx * dx + dy * dy);
 
-      const orthoScaled = ortho.scale(radius);
+      // orthogonalDirection = normalize(dir) rotated -90°; NaN for degenerate segments.
+      let ox = -dy / len;
+      let oy = dx / len;
+      if (Number.isNaN(ox) || Number.isNaN(oy))
+      {
+        ox = 0;
+        oy = 1;
+      }
 
-      const currSegmentLeft = new Line(currSegment.startPoint.add(orthoScaled), currSegment.endPoint.add(orthoScaled));
-      const currSegmentRight = new Line(currSegment.startPoint.sub(orthoScaled), currSegment.endPoint.sub(orthoScaled));
+      const oxr = ox * radius;
+      const oyr = oy * radius;
 
-      this.#addSegmentQuads(currSegment, currSegmentLeft, currSegmentRight);
+      segmentLeft.set(a.x + oxr, a.y + oyr, b.x + oxr, b.y + oyr);
+      segmentRight.set(a.x - oxr, a.y - oyr, b.x - oxr, b.y - oyr);
+
+      this.#addSegmentQuads(a.x, a.y, b.x, b.y, segmentLeft, segmentRight);
 
       if (i > 0)
       {
-        const thetaDiff = currSegment.theta - segments[i - 1].theta;
-        this.#addSegmentCaps(thetaDiff, currSegmentLeft, currSegmentRight, prevSegmentLeft!, prevSegmentRight!);
+        const thetaDiff = theta - prevTheta;
+        this.#addSegmentCaps(thetaDiff, segmentLeft, segmentRight, prevSegmentLeft!, prevSegmentRight!);
       }
 
       if (i === 0)
       {
-        const flippedLeft = new Line(currSegmentRight.endPoint, currSegmentRight.startPoint);
-        const flippedRight = new Line(currSegmentLeft.endPoint, currSegmentLeft.startPoint);
+        const flippedLeft = this.#tmpLineA.set(segmentRight.ex, segmentRight.ey, segmentRight.sx, segmentRight.sy);
+        const flippedRight = this.#tmpLineB.set(segmentLeft.ex, segmentLeft.ey, segmentLeft.sx, segmentLeft.sy);
 
-        this.#addSegmentCaps(Math.PI, currSegmentLeft, currSegmentRight, flippedLeft, flippedRight);
+        this.#addSegmentCaps(Math.PI, segmentLeft, segmentRight, flippedLeft, flippedRight);
       }
 
-      if (i === segments.length - 1)
+      if (i === vertices.length - 2)
       {
-        const flippedLeft = new Line(currSegmentRight.endPoint, currSegmentRight.startPoint);
-        const flippedRight = new Line(currSegmentLeft.endPoint, currSegmentLeft.startPoint);
+        const flippedLeft = this.#tmpLineA.set(segmentRight.ex, segmentRight.ey, segmentRight.sx, segmentRight.sy);
+        const flippedRight = this.#tmpLineB.set(segmentLeft.ex, segmentLeft.ey, segmentLeft.sx, segmentLeft.sy);
 
-        this.#addSegmentCaps(Math.PI, flippedLeft, flippedRight, currSegmentLeft, currSegmentRight);
+        this.#addSegmentCaps(Math.PI, flippedLeft, flippedRight, segmentLeft, segmentRight);
       }
 
-      prevSegmentLeft = currSegmentLeft;
-      prevSegmentRight = currSegmentRight;
+      prevSegmentLeft = segmentLeft;
+      prevSegmentRight = segmentRight;
+      prevTheta = theta;
     }
 
     return this;
   }
 
-  #addSegmentQuads(segment: Line, segmentLeft: Line, segmentRight: Line)
+  #addSegmentQuads(
+    sx: number,
+    sy: number,
+    ex: number,
+    ey: number,
+    segmentLeft: MutableLine,
+    segmentRight: MutableLine,
+  )
   {
     this.addTriangle(
-        segmentRight.endPoint.x,
-        segmentRight.endPoint.y,
+        segmentRight.ex,
+        segmentRight.ey,
         0,
-        segmentRight.startPoint.x,
-        segmentRight.startPoint.y,
+        segmentRight.sx,
+        segmentRight.sy,
         0,
-        segment.startPoint.x,
-        segment.startPoint.y,
+        sx,
+        sy,
         1,
     );
 
     this.addTriangle(
-        segment.startPoint.x,
-        segment.startPoint.y,
+        sx,
+        sy,
         1,
-        segment.endPoint.x,
-        segment.endPoint.y,
+        ex,
+        ey,
         1,
-        segmentRight.endPoint.x,
-        segmentRight.endPoint.y,
+        segmentRight.ex,
+        segmentRight.ey,
         0,
     );
 
     this.addTriangle(
-        segment.startPoint.x,
-        segment.startPoint.y,
+        sx,
+        sy,
         1,
-        segment.endPoint.x,
-        segment.endPoint.y,
+        ex,
+        ey,
         1,
-        segmentLeft.endPoint.x,
-        segmentLeft.endPoint.y,
+        segmentLeft.ex,
+        segmentLeft.ey,
         0,
     );
 
     this.addTriangle(
-        segmentLeft.endPoint.x,
-        segmentLeft.endPoint.y,
+        segmentLeft.ex,
+        segmentLeft.ey,
         0,
-        segmentLeft.startPoint.x,
-        segmentLeft.startPoint.y,
+        segmentLeft.sx,
+        segmentLeft.sy,
         0,
-        segment.startPoint.x,
-        segment.startPoint.y,
+        sx,
+        sy,
         1,
     );
   }
 
   #addSegmentCaps(
     thetaDiff: number,
-    segmentLeft: Line,
-    segmentRight: Line,
-    prevSegmentLeft: Line,
-    prevSegmentRight: Line,
+    segmentLeft: MutableLine,
+    segmentRight: MutableLine,
+    prevSegmentLeft: MutableLine,
+    prevSegmentRight: MutableLine,
   )
   {
     if (Math.abs(thetaDiff) > Math.PI)
@@ -134,35 +181,52 @@ export class PathGeometryBuilder
     if (thetaDiff === 0)
       return;
 
-    const origin = (segmentLeft.startPoint.add(segmentRight.startPoint)).scaleInPlace(0.5);
+    const originX = (segmentLeft.sx + segmentRight.sx) * 0.5;
+    const originY = (segmentLeft.sy + segmentRight.sy) * 0.5;
 
-    let current = thetaDiff > 0 ? prevSegmentRight.endPoint : prevSegmentLeft.endPoint;
-    const end = thetaDiff > 0 ? segmentRight.startPoint : segmentLeft.startPoint;
+    let currentX = thetaDiff > 0 ? prevSegmentRight.ex : prevSegmentLeft.ex;
+    let currentY = thetaDiff > 0 ? prevSegmentRight.ey : prevSegmentLeft.ey;
+    const endX = thetaDiff > 0 ? segmentRight.sx : segmentLeft.sx;
+    const endY = thetaDiff > 0 ? segmentRight.sy : segmentLeft.sy;
 
-    const start = thetaDiff > 0 ? new Line(prevSegmentLeft.endPoint, prevSegmentRight.endPoint) : new Line(prevSegmentRight.endPoint, prevSegmentLeft.endPoint);
-    const theta0 = start.theta;
+    const theta0 = thetaDiff > 0
+        ? Math.atan2(prevSegmentRight.ey - prevSegmentLeft.ey, prevSegmentRight.ex - prevSegmentLeft.ex)
+        : Math.atan2(prevSegmentLeft.ey - prevSegmentRight.ey, prevSegmentLeft.ex - prevSegmentRight.ex);
     const thetaStep = Math.sign(thetaDiff) * Math.PI / max_res;
     const stepCount = Math.ceil(thetaDiff / thetaStep);
 
     for (let i = 1; i <= stepCount; i++)
     {
-      const next = i < stepCount ? origin.add(pointOnCircle(theta0 + i * thetaStep).scaleInPlace(this.radius)) : end;
+      let nextX: number;
+      let nextY: number;
+      if (i < stepCount)
+      {
+        const angle = theta0 + i * thetaStep;
+        nextX = originX + Math.cos(angle) * this.radius;
+        nextY = originY + Math.sin(angle) * this.radius;
+      }
+      else
+      {
+        nextX = endX;
+        nextY = endY;
+      }
 
       this.addTriangle(
-          origin.x,
-          origin.y,
+          originX,
+          originY,
           1,
 
-          current.x,
-          current.y,
+          currentX,
+          currentY,
           0,
 
-          next.x,
-          next.y,
+          nextX,
+          nextY,
           0,
       );
 
-      current = next;
+      currentX = nextX;
+      currentY = nextY;
     }
   }
 
@@ -180,9 +244,21 @@ export class PathGeometryBuilder
     z3: number,
   )
   {
-    this.positions.push(x1, y1, z1, x2, y2, z2, x3, y3, z3);
-    this.texCoords.push(z1, 0.5, z2, 0.5, z3, 0.5);
-    this.indices.push(this.index, this.index + 1, this.index + 2);
+    if (this.positionsLength + 9 > this.positions.length)
+      this.positions = grow(this.positions, this.positionsLength + 9);
+    this.positions.set([x1, y1, z1, x2, y2, z2, x3, y3, z3], this.positionsLength);
+    this.positionsLength += 9;
+
+    if (this.texCoordsLength + 6 > this.texCoords.length)
+      this.texCoords = grow(this.texCoords, this.texCoordsLength + 6);
+    this.texCoords.set([z1, 0.5, z2, 0.5, z3, 0.5], this.texCoordsLength);
+    this.texCoordsLength += 6;
+
+    if (this.indicesLength + 3 > this.indices.length)
+      this.indices = grow(this.indices, this.indicesLength + 3);
+    this.indices[this.indicesLength++] = this.index;
+    this.indices[this.indicesLength++] = this.index + 1;
+    this.indices[this.indicesLength++] = this.index + 2;
 
     this.index += 3;
   }
@@ -195,15 +271,40 @@ export class PathGeometryBuilder
     v: number,
   )
   {
-    this.positions.push(x, y, z);
-    this.texCoords.push(u, v);
+    if (this.positionsLength + 3 > this.positions.length)
+      this.positions = grow(this.positions, this.positionsLength + 3);
+    this.positions.set([x, y, z], this.positionsLength);
+    this.positionsLength += 3;
+
+    if (this.texCoordsLength + 2 > this.texCoords.length)
+      this.texCoords = grow(this.texCoords, this.texCoordsLength + 2);
+    this.texCoords.set([u, v], this.texCoordsLength);
+    this.texCoordsLength += 2;
   }
 }
 
-function pointOnCircle(angle: number)
+type GrowableArray = Float32Array | Uint32Array;
+
+function grow<T extends GrowableArray>(array: T, required: number): T
 {
-  return new Vec2(
-      Math.cos(angle),
-      Math.sin(angle),
-  );
+  const next = new (array.constructor as new (length: number) => T)(Math.max(array.length * 2, required));
+  next.set(array as never);
+  return next;
+}
+
+class MutableLine
+{
+  sx = 0;
+  sy = 0;
+  ex = 0;
+  ey = 0;
+
+  set(sx: number, sy: number, ex: number, ey: number): this
+  {
+    this.sx = sx;
+    this.sy = sy;
+    this.ex = ex;
+    this.ey = ey;
+    return this;
+  }
 }

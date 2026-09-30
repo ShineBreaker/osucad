@@ -1,7 +1,7 @@
 import type { ArmedState, DrawableHitObject, Judgement } from "@osucad/core";
 import { HitResult, ShakeContainer, SkinnableDrawable } from "@osucad/core";
 import type { ReadonlyDependencyContainer } from "@osucad/framework";
-import { Anchor, Axes, Bindable, BindableBoolean, clamp, Container, provideSelf, ProxyDrawable } from "@osucad/framework";
+import { Anchor, Axes, Bindable, BindableBoolean, clamp, Container, provideSelf, ProxyDrawable, Vec2 } from "@osucad/framework";
 import { OsuSkinComponents } from "../../skinning/OsuSkinComponents";
 import type { Slider } from "../Slider";
 import { DrawableOsuHitObject } from "./DrawableOsuHitObject";
@@ -183,6 +183,9 @@ export class DrawableSlider extends DrawableOsuHitObject<Slider>
       this.samples.stop();
   }
 
+  readonly #snakeStartScratch = new Vec2();
+  readonly #snakeEndScratch = new Vec2();
+
   public override updateAfterChildren()
   {
     super.updateAfterChildren();
@@ -194,7 +197,10 @@ export class DrawableSlider extends DrawableOsuHitObject<Slider>
 
     for (const repeat of this.repeatContainer.children)
     {
-      repeat.updateSnakingPosition(this.hitObject.path.positionAt(this.sliderBody?.snakedStart ?? 0), this.hitObject.path.positionAt(this.sliderBody?.snakedEnd ?? 0));
+      repeat.updateSnakingPosition(
+          this.hitObject.path.positionAt(this.sliderBody?.snakedStart ?? 0, this.#snakeStartScratch),
+          this.hitObject.path.positionAt(this.sliderBody?.snakedEnd ?? 0, this.#snakeEndScratch),
+      );
     }
   }
 

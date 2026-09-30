@@ -82,7 +82,7 @@ export class LifetimeManagementContainer extends CompositeDrawable
 
     for (const d of this.#unmanagedDrawablesToProcess)
       this.makeChildAlive(d);
-    this.#unmanagedDrawablesToProcess = [];
+    this.#unmanagedDrawablesToProcess.length = 0;
 
     if (this.#manager.update(this.time.current))
       aliveChanged = true;

@@ -30,7 +30,10 @@ export class LifetimeEntryManager
     },
   });
 
-  #eventQueue: [LifetimeEntry, LifetimeBoundaryKind, LifetimeBoundaryCrossingDirection][] = [];
+  #eventQueueEntries: LifetimeEntry[] = [];
+  #eventQueueKinds: LifetimeBoundaryKind[] = [];
+  #eventQueueDirections: LifetimeBoundaryCrossingDirection[] = [];
+  #eventQueueHead = 0;
 
   #currentChildId = 0;
 
@@ -192,11 +195,16 @@ export class LifetimeEntryManager
         this.#activeEntries.delete(e);
     }
 
-    while (this.#eventQueue.length !== 0)
+    while (this.#eventQueueHead < this.#eventQueueEntries.length)
     {
-      const [entry, boundaryKind, crossingDirection] = this.#eventQueue.shift()!;
-      this.entryCrossedBoundary.emit(entry, boundaryKind, crossingDirection);
+      const i = this.#eventQueueHead++;
+      this.entryCrossedBoundary.emit(this.#eventQueueEntries[i], this.#eventQueueKinds[i], this.#eventQueueDirections[i]);
     }
+
+    this.#eventQueueEntries.length = 0;
+    this.#eventQueueKinds.length = 0;
+    this.#eventQueueDirections.length = 0;
+    this.#eventQueueHead = 0;
 
     return aliveEntriesChanged;
   }
@@ -266,26 +274,34 @@ export class LifetimeEntryManager
     return LifetimeEntryState.Current;
   }
 
+  #enqueueEvent(entry: LifetimeEntry, kind: LifetimeBoundaryKind, direction: LifetimeBoundaryCrossingDirection)
+  {
+    this.#eventQueueEntries.push(entry);
+    this.#eventQueueKinds.push(kind);
+    this.#eventQueueDirections.push(direction);
+  }
+
   #enqueueEvents(entry: LifetimeEntry, oldState: LifetimeEntryState, newState: LifetimeEntryState)
   {
     switch (oldState)
     {
     case LifetimeEntryState.Future:
-      this.#eventQueue.push([entry, LifetimeBoundaryKind.Start, LifetimeBoundaryCrossingDirection.Forward]);
+      this.#enqueueEvent(entry, LifetimeBoundaryKind.Start, LifetimeBoundaryCrossingDirection.Forward);
       if (newState === LifetimeEntryState.Past)
-        this.#eventQueue.push([entry, LifetimeBoundaryKind.End, LifetimeBoundaryCrossingDirection.Forward]);
+        this.#enqueueEvent(entry, LifetimeBoundaryKind.End, LifetimeBoundaryCrossingDirection.Forward);
       break;
 
     case LifetimeEntryState.Current:
-      this.#eventQueue.push(newState === LifetimeEntryState.Past
-          ? [entry, LifetimeBoundaryKind.End, LifetimeBoundaryCrossingDirection.Forward]
-          : [entry, LifetimeBoundaryKind.Start, LifetimeBoundaryCrossingDirection.Backward]);
+      if (newState === LifetimeEntryState.Past)
+        this.#enqueueEvent(entry, LifetimeBoundaryKind.End, LifetimeBoundaryCrossingDirection.Forward);
+      else
+        this.#enqueueEvent(entry, LifetimeBoundaryKind.Start, LifetimeBoundaryCrossingDirection.Backward);
       break;
 
     case LifetimeEntryState.Past:
-      this.#eventQueue.push([entry, LifetimeBoundaryKind.End, LifetimeBoundaryCrossingDirection.Backward]);
+      this.#enqueueEvent(entry, LifetimeBoundaryKind.End, LifetimeBoundaryCrossingDirection.Backward);
       if (newState === LifetimeEntryState.Future)
-        this.#eventQueue.push([entry, LifetimeBoundaryKind.Start, LifetimeBoundaryCrossingDirection.Backward]);
+        this.#enqueueEvent(entry, LifetimeBoundaryKind.Start, LifetimeBoundaryCrossingDirection.Backward);
       break;
     }
   }

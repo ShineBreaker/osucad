@@ -41,7 +41,10 @@ export abstract class AutoPlayController<T extends DrawableHitObject = DrawableH
     if (almostEquals(this.time.elapsed, 0) || !this.clock!.isRunning)
       return;
 
-    const hitObjects = this.hitObjects.filter(it => this.canProcess(it));
+    // Skip the filter allocation when canProcess isn't overridden (the common case).
+    const hitObjects = this.canProcess === AutoPlayController.prototype.canProcess
+        ? this.hitObjects
+        : this.hitObjects.filter(it => this.canProcess(it));
     if (hitObjects.length === 0)
       return;
 
@@ -55,7 +58,7 @@ export abstract class AutoPlayController<T extends DrawableHitObject = DrawableH
     }
   }
 
-  protected getCurrentAndNext<U extends DrawableHitObject>(time: number, hitObjects: U[]): { current?: U, next?: U, prev?: U, index?: number }
+  protected getCurrentAndNext<U extends DrawableHitObject>(time: number, hitObjects: readonly U[]): { current?: U, next?: U, prev?: U, index?: number }
   {
     const activeIndex = hitObjects.findLastIndex(h => time >= h.hitObject.startTime);
     return {

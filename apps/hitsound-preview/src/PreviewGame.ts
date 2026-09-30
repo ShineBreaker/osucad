@@ -1,10 +1,10 @@
 import type { Beatmap, ISkin } from "@osucad/core";
 import { BeatmapParser, BeatmapSkin, DefaultSkin, GameplayClock, OsucadGameBase, SkinProvidingContainer } from "@osucad/core";
-import type { ITrack } from "@osucad/framework";
-import { AudioBufferTrack, Axes, LoadState, SimpleFileSystem, ZipArchiveFileSystem } from "@osucad/framework";
+import type { FileSystemEvents, IFile, IFileSystem, ITrack } from "@osucad/framework";
+import { AudioBufferTrack, Axes, LoadState, SimpleFileSystem, ZipArchiveFile, ZipArchiveFileSystem } from "@osucad/framework";
 import type { ToParent, ToPreview } from "./protocol";
 import { postToParent } from "./protocol";
-import { Color } from "pixi.js";
+import { Color, EventEmitter } from "pixi.js";
 import { defaultSkinFiles } from "./defaults";
 import { PreviewClock } from "./PreviewClock";
 import { PreviewScreen } from "./PreviewScreen";
@@ -21,7 +21,7 @@ export class PreviewGame extends OsucadGameBase
   readonly clock = new PreviewClock();
 
   #parsed: ParsedBeatmap[] = [];
-  #fs?: SimpleFileSystem;
+  #fs?: IFileSystem;
   #activePath = ""; // 当前难度 .osu 路径（hs:update 后按路径保持所选难度）
   #beatmap?: Beatmap;
   #osuText = "";
@@ -29,7 +29,10 @@ export class PreviewGame extends OsucadGameBase
   #outerContainer?: SkinProvidingContainer;
   #defaultSkin?: ISkin;
   #track?: AudioBufferTrack;
-  #audioData?: ArrayBuffer;
+  #audioFp?: number; // 当前音频文件指纹（byteLength + 采样校验和），替代常驻 #audioData
+  #skin?: BeatmapSkin; // 重建才换：指纹不变时复用，避免全量 SkinnableSound 重查样本
+  #skinT?: ISkin;
+  #skinFp?: number;
 
   #seq = 0;
   #pending: ToPreview[] = [];
@@ -165,7 +168,7 @@ export class PreviewGame extends OsucadGameBase
 
   async #mountPackage(bytes: ArrayBuffer, preserveState: boolean)
   {
-    const fs = await ZipArchiveFileSystem.createMutable(bytes);
+    const fs = await ZipArchiveFileSystem.createMutableLazy(bytes);
     const parsed = await this.#parseAll(fs);
     if (!parsed.length)
       throw new Error("谱面集中没有可解析的 .osu 文件");
@@ -188,7 +191,7 @@ export class PreviewGame extends OsucadGameBase
   }
 
   /** 装载一个难度：重建 skin（含 combo 颜色）→ 按 sameBeatmap 决定换屏或复用 → 音轨/时钟 */
-  async #applyBeatmap(parsed: ParsedBeatmap, fs: SimpleFileSystem, preserveState: boolean)
+  async #applyBeatmap(parsed: ParsedBeatmap, fs: IFileSystem, preserveState: boolean)
   {
     const seq = ++this.#seq;
 
@@ -202,17 +205,18 @@ export class PreviewGame extends OsucadGameBase
       && this.#osuText === text;
 
     const audioPath = beatmap.beatmapInfo.audioFile.toLowerCase();
-    const audioData = (await fs.get(audioPath)?.read()) ?? null;
-    const audioSame = this.#audioData !== undefined && audioData !== null
-      && bytesEqual(this.#audioData, audioData);
+    const audioEntry = fs.get(audioPath);
+    const audioFp = audioEntry ? audioFingerprint(await audioEntry.read()) : undefined;
+    const audioSame = audioFp !== undefined && audioFp === this.#audioFp;
 
     let track: AudioBufferTrack | null | undefined;
     if (audioSame)
       track = this.#track ?? null;
-    else if (audioData)
+    else if (audioEntry)
     {
       try
       {
+        const audioData = await audioEntry.read();
         const copy = new ArrayBuffer(audioData.byteLength);
         new Uint8Array(copy).set(new Uint8Array(audioData));
         const buffer = await this.audioManager.context.decodeAudioData(copy);
@@ -229,31 +233,30 @@ export class PreviewGame extends OsucadGameBase
     if (seq !== this.#seq)
       return;
 
-    // Skin 每次重建：换 skin → sourceChanged → 所有 SkinnableSound 重取样本。
+    // 皮肤层（BeatmapSkin）：指纹覆盖包内非 .osu/非歌曲文件（path+size），
+    // 指纹与同谱面同时不变 → 复用 #skinT，跳过 BeatmapSkin+transformer 重建，
+    // 也省去 sourceChanged 引起的全量 SkinnableSound 样本重查。
     // 采样分两层（lazer LegacyBeatmapSkin / LegacySkin 语义）：
     //   谱面文件层（BeatmapSkin，UseCustomSampleBanks=true）：解析下标 ≥1 才查，
     //     下标 ≥2 时只查带后缀名，不回落包内裸名；
     //   默认皮肤层（DefaultSkin，UseCustomSampleBanks=false）：下标 ≥2 剥后缀查裸名。
-    // beatmapFs 剔除歌曲文件，避免 SkinSampleStore.loadAll 把整首 MP3 也解码。
-    const beatmapFs = new SimpleFileSystem();
-    for (const entry of fs.entries())
+    // FilteredFileSystem 惰性视图剔除歌曲文件，避免 loadAll 把整首 MP3 解码成采样。
+    const skinFp = skinFingerprint(fs, audioPath);
+
+    let skin: BeatmapSkin | undefined;
+    let skinT: ISkin;
+    if (sameBeatmap && skinFp === this.#skinFp && this.#skin && this.#skinT)
     {
-      if (entry.path === audioPath)
-        continue;
-      await beatmapFs.create(entry.path, await entry.read());
+      skinT = this.#skinT;
+      // 颜色随谱面文本走，指纹相等时内容一致，重设开销可忽略
+      applySkinColors(this.#skin, beatmap);
     }
-
-    const skin = new BeatmapSkin(beatmapFs, this);
-    // 谱面 [Colours] 的 combo 颜色优先于皮肤默认（未解析到时 Skin 回落纯白）
-    if (beatmap.colors.comboColors.length)
-      skin.config.comboColors = [...beatmap.colors.comboColors];
-    // 滑条体默认纯黑；谱面 [Colours] 的 SliderTrackOverride/SliderBorder 优先覆盖
-    skin.config.set("sliderTrackOverride", beatmap.colors.sliderTrackOverride ?? new Color(0x000000));
-    if (beatmap.colors.sliderBorder)
-      skin.config.set("sliderBorder", beatmap.colors.sliderBorder);
-
-    const skinT: ISkin
-      = (await beatmap.beatmapInfo.ruleset?.createSkinTransformer?.(skin)) ?? skin;
+    else
+    {
+      skin = new BeatmapSkin(new FilteredFileSystem(fs, audioPath), this);
+      applySkinColors(skin, beatmap);
+      skinT = (await beatmap.beatmapInfo.ruleset?.createSkinTransformer?.(skin)) ?? skin;
+    }
 
     // 默认皮肤层常驻（文件不变），同样经 ruleset transformer 拿纹理/采样 store
     if (!this.#defaultSkin)
@@ -308,20 +311,26 @@ export class PreviewGame extends OsucadGameBase
     }
     else
     {
-      this.#skinContainer.skin = skinT;
+      this.#skinContainer!.skin = skinT;
     }
 
     this.#beatmap = beatmap;
     this.#activePath = path;
     this.#osuText = text;
-    this.#audioData = audioData ?? undefined;
+    this.#audioFp = audioFp;
+    if (skin)
+    {
+      this.#skin = skin;
+      this.#skinT = skinT;
+      this.#skinFp = skinFp;
+    }
 
     if (!audioSame)
     {
       if (this.#track)
       {
         this.#track.stop();
-        this.#track.output.disconnect();
+        this.audioManager.trackMixer.disconnect(this.#track);
         this.#track.dispose();
       }
       this.#track = track ?? undefined;
@@ -355,31 +364,57 @@ export class PreviewGame extends OsucadGameBase
     });
   }
 
+  /** 已解析难度缓存：path+size 一致直接复用，省掉 TextDecoder+parse 往返 */
+  readonly #parsedCache = new Map<string, { beatmap: Beatmap, path: string, text: string, size: number }>();
+
   /** 解析谱面集内全部 .osu——多难度共用同一 fs/skin，只换游玩屏 */
-  async #parseAll(fs: SimpleFileSystem): Promise<ParsedBeatmap[]>
+  async #parseAll(fs: IFileSystem): Promise<ParsedBeatmap[]>
   {
     const candidates = fs.entries()
-      .filter(f => f.path.endsWith(".osu"))
+      .filter(f => f.path.toLowerCase().endsWith(".osu"))
       .sort((a, b) => a.path.localeCompare(b.path));
 
     const parser = new BeatmapParser();
     const parsed: ParsedBeatmap[] = [];
+    const seen = new Set<string>();
 
     for (const entry of candidates)
     {
       try
       {
+        const size = fileSize(entry);
+        const cached = size >= 0 ? this.#parsedCache.get(entry.path) : undefined;
+
+        if (cached && cached.size === size)
+        {
+          parsed.push(cached);
+          seen.add(entry.path);
+          continue;
+        }
+
         const text = new TextDecoder().decode(await entry.read());
         const beatmap = await parser.parse(text);
 
         if (beatmap.beatmapInfo.ruleset)
-          parsed.push({ beatmap, path: entry.path, text });
+        {
+          const item = { beatmap, path: entry.path, text, size };
+          parsed.push(item);
+          if (size >= 0)
+          {
+            this.#parsedCache.set(entry.path, item);
+            seen.add(entry.path);
+          }
+        }
       }
       catch
       {
         // 解析失败的 .osu 跳过（其它 mode / 损坏文件），不阻塞可用难度
       }
     }
+
+    for (const key of this.#parsedCache.keys())
+      if (!seen.has(key))
+        this.#parsedCache.delete(key);
 
     return parsed;
   }
@@ -398,28 +433,81 @@ function defaultSkinFs()
   })();
 }
 
-function bytesEqual(a: ArrayBuffer, b: ArrayBuffer)
+/** 音频指纹：byteLength + 首/中/尾各 2KB 的 FNV-1a 采样校验和（替代常驻全量字节+全量比） */
+function audioFingerprint(buf: ArrayBuffer): number
 {
-  if (a.byteLength !== b.byteLength)
-    return false;
+  let h = (0x811c9dc5 ^ buf.byteLength) >>> 0;
+  const bytes = new Uint8Array(buf);
 
-  const u1 = new Uint32Array(a, 0, a.byteLength >> 2);
-  const u2 = new Uint32Array(b, 0, b.byteLength >> 2);
-
-  for (let i = 0; i < u1.length; i++)
+  for (const start of [0, Math.max(0, (buf.byteLength - 2048) >> 1), Math.max(0, buf.byteLength - 2048)])
   {
-    if (u1[i] !== u2[i])
-      return false;
+    const end = Math.min(start + 2048, buf.byteLength);
+    for (let i = start; i < end; i++)
+      h = Math.imul(h ^ bytes[i], 0x01000193) >>> 0;
   }
 
-  const t1 = new Uint8Array(a, u1.length * 4);
-  const t2 = new Uint8Array(b, u2.length * 4);
+  return h;
+}
 
-  for (let i = 0; i < t1.length; i++)
+/** 惰性条目的解压前大小（非 zip 来源返回 -1，禁用 size 缓存） */
+function fileSize(file: IFile): number
+{
+  return file instanceof ZipArchiveFile ? file.size : -1;
+}
+
+/** 包内非 .osu/非歌曲文件的 path+size 指纹，决定 BeatmapSkin 是否需要重建 */
+function skinFingerprint(fs: IFileSystem, audioPath: string): number
+{
+  let h = 0x811c9dc5 >>> 0;
+
+  for (const entry of fs.entries())
   {
-    if (t1[i] !== t2[i])
-      return false;
+    const path = entry.path.toLowerCase();
+    if (path === audioPath || path.endsWith(".osu"))
+      continue;
+
+    for (let i = 0; i < path.length; i++)
+      h = Math.imul(h ^ path.charCodeAt(i), 0x01000193) >>> 0;
+    h = Math.imul(h ^ fileSize(entry), 0x01000193) >>> 0;
   }
 
-  return true;
+  return h;
+}
+
+function applySkinColors(skin: BeatmapSkin, beatmap: Beatmap)
+{
+  // 谱面 [Colours] 的 combo 颜色优先于皮肤默认（未解析到时 Skin 回落纯白）
+  if (beatmap.colors.comboColors.length)
+    skin.config.comboColors = [...beatmap.colors.comboColors];
+  // 滑条体默认纯黑；谱面 [Colours] 的 SliderTrackOverride/SliderBorder 优先覆盖
+  skin.config.set("sliderTrackOverride", beatmap.colors.sliderTrackOverride ?? new Color(0x000000));
+  if (beatmap.colors.sliderBorder)
+    skin.config.set("sliderBorder", beatmap.colors.sliderBorder);
+}
+
+/** 惰性只读视图：向 BeatmapSkin 暴露除歌曲文件外的所有条目（等效原 beatmapFs 剔除） */
+class FilteredFileSystem extends EventEmitter<FileSystemEvents> implements IFileSystem
+{
+  readonly #inner: IFileSystem;
+  readonly #excluded: string;
+
+  constructor(inner: IFileSystem, excludedPath: string)
+  {
+    super();
+
+    this.#inner = inner;
+    this.#excluded = excludedPath;
+  }
+
+  entries(): IFile[]
+  {
+    return this.#inner.entries().filter(e => e.path.toLowerCase() !== this.#excluded);
+  }
+
+  get(path: string): IFile | undefined
+  {
+    if (path.trim().toLowerCase() === this.#excluded)
+      return undefined;
+    return this.#inner.get(path);
+  }
 }

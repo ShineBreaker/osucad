@@ -34,6 +34,8 @@ export class Slider extends OsuHitObject
     this.positionBindable.bindValueChanged(this.#updateNestedPositions, this);
   }
 
+  readonly #positionScratch = new Vec2();
+
   #updateNestedPositions()
   {
     for (const nested of this.nestedHitObjects)
@@ -43,9 +45,17 @@ export class Slider extends OsuHitObject
       else if (nested instanceof SliderTailCircle)
         nested.position = this.position;
       else if (nested instanceof SliderRepeat)
-        nested.position = this.position.add(this.path.positionAt(nested.pathProgress));
+      {
+        this.path.positionAt(nested.pathProgress, this.#positionScratch);
+        this.#positionScratch.addInPlace(this.position);
+        nested.position = this.#positionScratch;
+      }
       else if (nested instanceof SliderTick)
-        nested.position = this.position.add(this.path.positionAt(nested.pathProgress));
+      {
+        this.path.positionAt(nested.pathProgress, this.#positionScratch);
+        this.#positionScratch.addInPlace(this.position);
+        nested.position = this.#positionScratch;
+      }
     }
 
     if (this.headCircle)
@@ -166,6 +176,16 @@ export class Slider extends OsuHitObject
   public override get endPosition(): Vec2
   {
     return this.position.add(this.curvePositionAt(1));
+  }
+
+  override getStackedEndPosition(out: Vec2): Vec2
+  {
+    this.curvePositionAt(1, out).addInPlace(this.position);
+
+    out.x += this.stackOffsetScalar;
+    out.y += this.stackOffsetScalar;
+
+    return out;
   }
 
   protected override createNestedHitObjects()

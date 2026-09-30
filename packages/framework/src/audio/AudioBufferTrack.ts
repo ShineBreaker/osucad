@@ -88,11 +88,13 @@ export class AudioBufferTrack extends Track
 
   override stop(): void
   {
-    if (!this.#source)
+    const source = this.#source;
+    if (!source)
       return;
 
-    this.#source.onended = null;
-    this.#source.stop();
+    source.onended = null;
+    source.stop();
+    source.disconnect();
     this.#source = null;
 
     this.#offset = (this.contextTimeMillis - this.#contextTimeAtStart) * this.rate + this.#timeAtStart;
@@ -112,18 +114,12 @@ export class AudioBufferTrack extends Track
 
   override set rate(value: number)
   {
+    this.#rate = value;
+
     if (!this.isRunning)
-    {
-      this.#rate = value;
       return;
-    }
 
     this.stop();
-    this.#rate = value;
-    if (this.#source)
-    {
-      this.#source.playbackRate.value = value;
-    }
     this.start();
   }
 
