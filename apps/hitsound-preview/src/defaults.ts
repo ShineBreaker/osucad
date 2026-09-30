@@ -34,7 +34,9 @@ const DARK = "#17171c";   // accent.Darken(4) 的灰度近似（乘染后 ≈ �
 const MID = "#8f8f99";    // accent.Darken(0.5..0.6)
 const BRIGHT = "#ffffff"; // accent 全亮
 
-// Argon 圈体：暗心 → 中层渐亮 → 外层亮环 → 描边环之下回落暗色
+// Argon 圈体：暗心 → 中层渐亮 → 外层亮环 → 描边环之下回落暗色。
+// 只填圆形区域（arc），圆外必须保持透明——fillRect 会让四角钳制成
+// 渐变末端的深色，渲染出来就是物件后面的黑色方块，还会污染滑条。
 function argonCircle(ctx: CanvasRenderingContext2D, s: number)
 {
   const r = s / 2;
@@ -46,7 +48,9 @@ function argonCircle(ctx: CanvasRenderingContext2D, s: number)
   g.addColorStop(F_OUTER_GRAD + 0.03, DARK);
   g.addColorStop(1, DARK);
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, s, s);
+  ctx.beginPath();
+  ctx.arc(r, r, r, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // 白色描边环（hitcircleoverlay，不被染色）——宽度 = BORDER

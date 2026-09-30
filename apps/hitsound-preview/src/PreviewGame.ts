@@ -19,8 +19,10 @@ export class PreviewGame extends OsucadGameBase
 {
   readonly clock = new PreviewClock();
 
+  #parsed: ParsedBeatmap[] = [];
+  #fs?: SimpleFileSystem;
+  #activePath = ""; // 当前难度 .osu 路径（hs:update 后按路径保持所选难度）
   #beatmap?: Beatmap;
-  #osuPath = "";
   #osuText = "";
   #skinContainer?: SkinProvidingContainer;
   #track?: AudioBufferTrack;
@@ -78,7 +80,7 @@ export class PreviewGame extends OsucadGameBase
         await this.#mountPackage(message.bytes, true);
         break;
       case "hs:control":
-        await this.#control(message.action, message.value);
+        await this.#control(message);
         break;
       }
     }
@@ -88,8 +90,11 @@ export class PreviewGame extends OsucadGameBase
     }
   }
 
-  async #control(action: string, value?: number)
+  async #control(message: Extract<ToPreview, { type: "hs:control" }>)
   {
+    const { action } = message;
+    const value = "value" in message ? message.value : undefined;
+
     switch (action)
     {
     case "play":
@@ -105,7 +110,20 @@ export class PreviewGame extends OsucadGameBase
       break;
     case "volume":
       if (value !== undefined)
-        this.audioManager.volume.value = Math.min(1, Math.max(0, value));
+      {
+        const v = Math.min(1, Math.max(0, value));
+        // music = 音轨 mixer，effects = 音效采样 mixer（channel 缺省 = 总音量）
+        if (message.channel === "music")
+          this.audioManager.trackMixer.volume.value = v;
+        else if (message.channel === "effects")
+          this.audioManager.sampleMixer.volume.value = v;
+        else
+          this.audioManager.volume.value = v;
+      }
+      break;
+    case "difficulty":
+      if (value !== undefined)
+        await this.#selectDifficulty(value);
       break;
     case "stats":
       this.post({ type: "cad:stats", lookups: this.#sampleLookups, hits: this.#sampleHits });
@@ -137,15 +155,32 @@ export class PreviewGame extends OsucadGameBase
 
   async #mountPackage(bytes: ArrayBuffer, preserveState: boolean)
   {
-    const seq = ++this.#seq;
-
     const fs = await ZipArchiveFileSystem.createMutable(bytes);
-    if (seq !== this.#seq)
+    const parsed = await this.#parseAll(fs);
+    if (!parsed.length)
+      throw new Error("谱面集中没有可解析的 .osu 文件");
+
+    this.#fs = fs;
+    this.#parsed = parsed;
+
+    // 尽量沿用正在预览的难度（路径保持），否则取第一个可解析难度
+    const chosen = parsed.find(p => p.path === this.#activePath) ?? parsed[0];
+    await this.#applyBeatmap(chosen, fs, preserveState);
+  }
+
+  async #selectDifficulty(index: number)
+  {
+    const parsed = this.#parsed[index];
+    if (!parsed || parsed.path === this.#activePath || !this.#fs)
       return;
 
-    const parsed = await this.#parseBeatmap(fs);
-    if (seq !== this.#seq)
-      return;
+    await this.#applyBeatmap(parsed, this.#fs, false);
+  }
+
+  /** 装载一个难度：重建 skin（含 combo 颜色）→ 按 sameBeatmap 决定换屏或复用 → 音轨/时钟 */
+  async #applyBeatmap(parsed: ParsedBeatmap, fs: SimpleFileSystem, preserveState: boolean)
+  {
+    const seq = ++this.#seq;
 
     const { beatmap, path, text } = parsed;
 
@@ -153,7 +188,7 @@ export class PreviewGame extends OsucadGameBase
     const sameBeatmap
       = preserveState
       && this.#skinContainer !== undefined
-      && this.#osuPath === path
+      && this.#activePath === path
       && this.#osuText === text;
 
     const audioPath = beatmap.beatmapInfo.audioFile.toLowerCase();
@@ -198,6 +233,10 @@ export class PreviewGame extends OsucadGameBase
     }
 
     const skin = new Skin(skinFs, this);
+    // 谱面 [Colours] 的 combo 颜色优先于皮肤默认（未解析到时 Skin 回落纯白）
+    if (beatmap.colors.comboColors.length)
+      skin.config.comboColors = [...beatmap.colors.comboColors];
+
     const skinT: ISkin
       = (await beatmap.beatmapInfo.ruleset?.createSkinTransformer?.(skin)) ?? skin;
 
@@ -237,7 +276,7 @@ export class PreviewGame extends OsucadGameBase
     }
 
     this.#beatmap = beatmap;
-    this.#osuPath = path;
+    this.#activePath = path;
     this.#osuText = text;
     this.#audioData = audioData ?? undefined;
 
@@ -274,41 +313,39 @@ export class PreviewGame extends OsucadGameBase
         objects: beatmap.hitObjects.length,
         hasAudio: this.#track !== undefined,
         beatmapFile: path,
+        difficulties: this.#parsed.map(p => p.beatmap.metadata.difficultyName || p.path),
+        difficultyIndex: this.#parsed.indexOf(parsed),
       },
     });
   }
 
-  async #parseBeatmap(fs: SimpleFileSystem): Promise<ParsedBeatmap>
+  /** 解析谱面集内全部 .osu——多难度共用同一 fs/skin，只换游玩屏 */
+  async #parseAll(fs: SimpleFileSystem): Promise<ParsedBeatmap[]>
   {
     const candidates = fs.entries()
       .filter(f => f.path.endsWith(".osu"))
       .sort((a, b) => a.path.localeCompare(b.path));
 
     const parser = new BeatmapParser();
-    let lastError: unknown;
+    const parsed: ParsedBeatmap[] = [];
 
     for (const entry of candidates)
     {
-      const text = new TextDecoder().decode(await entry.read());
-
       try
       {
+        const text = new TextDecoder().decode(await entry.read());
         const beatmap = await parser.parse(text);
 
-        if (!beatmap.beatmapInfo.ruleset)
-          throw new Error("谱面未声明可用 Mode");
-
-        return { beatmap, path: entry.path, text };
+        if (beatmap.beatmapInfo.ruleset)
+          parsed.push({ beatmap, path: entry.path, text });
       }
-      catch (e)
+      catch
       {
-        lastError = e;
+        // 解析失败的 .osu 跳过（其它 mode / 损坏文件），不阻塞可用难度
       }
     }
 
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("谱面集中没有可解析的 .osu 文件");
+    return parsed;
   }
 }
 

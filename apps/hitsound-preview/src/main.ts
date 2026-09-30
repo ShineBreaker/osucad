@@ -8,6 +8,9 @@ import { PreviewGame } from "./PreviewGame";
 const game = new PreviewGame();
 const host = new WebGameHost();
 
+// 冒烟/调试句柄（音量断言等）
+(window as unknown as { __game?: PreviewGame }).__game = game;
+
 void host.run(game);
 
 window.addEventListener("message", (event) =>

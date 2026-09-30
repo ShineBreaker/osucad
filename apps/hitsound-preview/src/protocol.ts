@@ -15,12 +15,20 @@ export interface PreviewMeta
   hasAudio: boolean;
   /** 谱面文件名（.osu 路径） */
   beatmapFile: string;
+  /** 谱面集内全部可用难度名（Version） */
+  difficulties: string[];
+  /** 当前装载难度在 difficulties 中的下标 */
+  difficultyIndex: number;
 }
+
+export type VolumeChannel = "music" | "effects";
 
 export type ToPreview =
   | { type: "hs:load"; name: string; bytes: ArrayBuffer }
   | { type: "hs:update"; name: string; bytes: ArrayBuffer }
-  | { type: "hs:control"; action: "play" | "pause" | "seek" | "volume" | "stats"; value?: number };
+  | { type: "hs:control"; action: "play" | "pause" | "seek" | "stats"; value?: number }
+  | { type: "hs:control"; action: "volume"; channel: VolumeChannel; value: number }
+  | { type: "hs:control"; action: "difficulty"; value: number };
 
 export type ToParent =
   | { type: "cad:ready" }
