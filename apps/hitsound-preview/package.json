@@ -1,0 +1,19 @@
+{
+  "name": "@osucad/hitsound-preview",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@osucad/core": "workspace:*",
+    "@osucad/framework": "workspace:*",
+    "@osucad/ruleset-osu": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^7.3.3",
+    "vite-plugin-conditional-compiler": "^0.4.0"
+  }
+}
