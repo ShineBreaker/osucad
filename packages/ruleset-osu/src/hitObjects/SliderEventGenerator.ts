@@ -11,6 +11,7 @@ function* generate(
   tickDistance: number,
   totalDistance: number,
   spanCount: number,
+  generateTicks = true,
 ): Generator<SliderEventDescriptor, void, unknown>
 {
   const length = Math.min(totalDistance, max_length);
@@ -31,9 +32,10 @@ function* generate(
     const spanStartTime = startTime + span * spanDuration;
     const reversed = span % 2 === 1;
 
-    if (tickDistance !== 0)
+    // lazer：绿线 beatLength 为 NaN 时 GenerateTicks=false，整个 span 不出 tick
+    if (generateTicks && tickDistance !== 0)
     {
-      const ticks = [...generateTicks(span, spanStartTime, spanDuration, reversed, length, tickDistance, minDistanceFromEnd)];
+      const ticks = [...generateSpanTicks(span, spanStartTime, spanDuration, reversed, length, tickDistance, minDistanceFromEnd)];
 
       if (reversed)
         ticks.reverse();
@@ -82,7 +84,7 @@ function* generate(
 }
 
 
-function* generateTicks(
+function* generateSpanTicks(
   spanIndex: number,
   spanStartTime: number,
   spanDuration: number,

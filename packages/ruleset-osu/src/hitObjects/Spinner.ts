@@ -124,6 +124,9 @@ export class Spinner extends OsuHitObject
           ? new SpinnerTick()
           : new SpinnerBonusTick();
 
+      if (nested instanceof SpinnerBonusTick)
+        nested.spinner = this;
+
       nested.startTime = startTime;
       nested.spinnerDuration = this.duration;
 

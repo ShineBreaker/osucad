@@ -7,5 +7,7 @@ export interface IBeatmapTiming
 
   getSliderVelocityAt(time: number): number;
 
+  getGenerateTicksAt(time: number): boolean;
+
   getSampleInfoAt(time: number): ISampleInfo
 }

@@ -12,6 +12,9 @@ export class BeatmapInfo
   public previewTime = -1;
   public countdownType = -1;
   public sampleSet = "Normal";
+
+  /** `[General] SampleVolume`——timing 点缺省音量的回落值（lazer defaultSampleVolume） */
+  public sampleVolume = 100;
   public stackLeniency = 0;
   public ruleset: Ruleset | undefined;
   public letterboxInBreaks = false;

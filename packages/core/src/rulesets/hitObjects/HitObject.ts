@@ -7,6 +7,7 @@ import { HitResult } from "../scoring";
 import { Judgement } from "../judgements/Judgement";
 import { HitSoundInfo } from "../../audio/HitSoundInfo";
 import type { HitSampleInfo } from "../../audio/HitSampleInfo";
+import { CONTROL_POINT_LENIENCY } from "../../beatmaps/timing/LegacyBeatmapTiming";
 
 export class HitObject
 {
@@ -134,7 +135,8 @@ export class HitObject
 
   protected createSamples(timing: IBeatmapTiming): HitSampleInfo[]
   {
-    return this.hitSound.getSamples(this.startTime, timing);
+    // lazer：非滑条物件取 `GetEndTime() + CONTROL_POINT_LENIENCY` 处的控制点
+    return this.hitSound.getSamples(this.endTime + CONTROL_POINT_LENIENCY, timing);
   }
 }
 

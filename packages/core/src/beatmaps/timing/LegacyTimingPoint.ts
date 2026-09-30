@@ -43,6 +43,12 @@ export class LegacyTimingPoint
     this.sliderVelocityBindable.value = value;
   }
 
+  /** 红线（uninherited=true）还是绿线。同一时刻分组取点时绿线覆盖红线 */
+  uninherited = true;
+
+  /** NaN beatLength 的绿线用于禁用滑条 tick（lazer GenerateTicks） */
+  generateTicks = true;
+
   readonly sampleSetBindable = new Bindable<SampleSet>(SampleSet.None);
 
   get sampleSet()

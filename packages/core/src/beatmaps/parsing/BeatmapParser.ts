@@ -147,6 +147,12 @@ function parseGeneral(line: string, { beatmapInfo }: Beatmap)
   case "SampleSet":
     beatmapInfo.sampleSet = value;
     break;
+  case "SampleVolume": {
+    const volume = Number.parseInt(value);
+    if (Number.isFinite(volume))
+      beatmapInfo.sampleVolume = volume;
+    break;
+  }
   case "StackLeniency":
     beatmapInfo.stackLeniency = Number.parseFloat(value);
     break;
@@ -270,42 +276,80 @@ function parseTimingPoint(line: string, beatmap: Beatmap)
   if (values.length <= 1)
     return;
 
-  const uninherited = values[6] === "1";
+  const startTime = Number.parseFloat(values[0]);
+  const beatLength = Number.parseFloat(values[1]);
 
-  const startTime = Number.parseInt(values[0]);
+  // lazer：第 7 列缺失（或空串）按红线处理
+  const uninherited = values.length < 7 || values[6].trim() === "" || values[6].trimStart()[0] === "1";
+
+  if (uninherited && Number.isNaN(beatLength))
+    return; // lazer 丢弃 NaN beatLength 的红线
 
   const timingPoint = new LegacyTimingPoint();
   timingPoint.startTime = startTime;
+  timingPoint.uninherited = uninherited;
+  timingPoint.generateTicks = !Number.isNaN(beatLength);
 
-  timingPoint.sampleSet = SampleSet.Normal;
-
-  if (values.length >= 4)
-    timingPoint.sampleSet = Number.parseInt(values[3]);
+  // 缺列回落：[General] SampleSet / SampleVolume，index 默认 0
+  timingPoint.sampleSet = values.length >= 4 ? parseTimingSampleSet(values[3], beatmap) : defaultSampleSetOf(beatmap);
 
   if (values.length >= 5)
-    timingPoint.sampleIndex = Number.parseInt(values[4]);
+  {
+    const index = Number.parseInt(values[4]);
+    timingPoint.sampleIndex = Number.isNaN(index) ? 0 : index;
+  }
 
   if (values.length >= 6)
-    timingPoint.volume = Number.parseInt(values[5]);
+  {
+    const volume = Number.parseInt(values[5]);
+    timingPoint.volume = Number.isNaN(volume) ? beatmap.beatmapInfo.sampleVolume : Math.min(100, Math.max(0, volume));
+  }
+  else
+    timingPoint.volume = beatmap.beatmapInfo.sampleVolume;
+
+  // SV 由该行自身的 beatLength 决定（红绿线都算）；正值与 NaN → 1
+  const speedMultiplier = beatLength < 0 ? 100 / -beatLength : 1;
+  timingPoint.sliderVelocity = speedMultiplier;
 
   if (uninherited)
   {
-    const beatDuration = Number.parseFloat(values[1]);
     const signature = Number.parseInt(values[2]);
 
     timingPoint.timingInfo = {
-      beatLength: beatDuration,
-      signature,
+      beatLength,
+      signature: Number.isNaN(signature) ? 4 : signature,
     };
-  }
-  else
-  {
-    const sliderVelocity = -100 / Number.parseFloat(values[1]);
-
-    timingPoint.sliderVelocity = sliderVelocity;
   }
 
   beatmap.timing.add(timingPoint);
+}
+
+/** `[General] SampleSet` → 数值 bank（None→None，使用时归一化为 Normal） */
+function defaultSampleSetOf(beatmap: Beatmap): SampleSet
+{
+  return sampleSetFromName(beatmap.beatmapInfo.sampleSet) ?? SampleSet.None;
+}
+
+function sampleSetFromName(value: string): SampleSet | undefined
+{
+  switch (value.trim().toLowerCase())
+  {
+  case "none": return SampleSet.None;
+  case "normal": return SampleSet.Normal;
+  case "soft": return SampleSet.Soft;
+  case "drum": return SampleSet.Drum;
+  default: {
+    const parsed = Number.parseInt(value);
+    return Number.isNaN(parsed) ? undefined : parsed as SampleSet;
+  }
+  }
+}
+
+/** timing 点第 4 列：非法值回 [General] 默认 bank */
+function parseTimingSampleSet(raw: string, beatmap: Beatmap): SampleSet
+{
+  const parsed = Number.parseInt(raw);
+  return Number.isNaN(parsed) ? defaultSampleSetOf(beatmap) : parsed as SampleSet;
 }
 
 function parseVersionHeader(line: string)

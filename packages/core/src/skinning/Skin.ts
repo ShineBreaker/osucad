@@ -32,7 +32,7 @@ export class Skin implements ISkin
 
   getSample(sampleInfo: ISampleInfo): Sample | null
   {
-    for (const lookup of sampleInfo.lookupNames)
+    for (const lookup of this.getSampleLookups(sampleInfo))
     {
       const sample = this.samples.get(lookup);
       if (sample)
@@ -40,6 +40,15 @@ export class Skin implements ISkin
     }
 
     return null;
+  }
+
+  /**
+   * 本层皮肤允许查询的文件名列表（lazer `LegacySkin.getLegacyLookupNames`）。
+   * 默认不过滤；`BeatmapSkin`/`DefaultSkin` 按自定义音效组下标语义裁剪。
+   */
+  protected getSampleLookups(sampleInfo: ISampleInfo): string[]
+  {
+    return sampleInfo.lookupNames;
   }
 
   public getDrawableComponent(lookup: SkinComponentLookup): Drawable | null

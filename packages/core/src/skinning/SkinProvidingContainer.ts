@@ -50,8 +50,9 @@ export class SkinProvidingContainer extends Container implements ISkinSource
     if (this.skin)
       sources.push(this.skin);
 
-    if (this.#parentSource)
-      sources.push(this.#parentSource);
+    const parent = this.#parentSource.value;
+    if (parent)
+      sources.push(parent);
 
     return sources;
   });
@@ -67,13 +68,15 @@ export class SkinProvidingContainer extends Container implements ISkinSource
     this.activeSkin.value = value;
   }
 
-  #parentSource?: ISkinSource;
+  // ref 而非普通字段：ctor 内 watch(immediate) 会先求值 #allSources，
+  // load() 里赋值必须触发重算才能挂上父层皮肤源
+  #parentSource = ref<ISkinSource | undefined>(undefined);
 
   protected override load(dependencies: ReadonlyDependencyContainer)
   {
     super.load(dependencies);
 
-    this.#parentSource = dependencies.resolveOptional(ISkinSource);
+    this.#parentSource.value = dependencies.resolveOptional(ISkinSource);
   }
 
   @withEffectScope()

@@ -1,5 +1,5 @@
 import type { Beatmap, ISkin } from "@osucad/core";
-import { BeatmapParser, GameplayClock, OsucadGameBase, Skin, SkinProvidingContainer } from "@osucad/core";
+import { BeatmapParser, BeatmapSkin, DefaultSkin, GameplayClock, OsucadGameBase, SkinProvidingContainer } from "@osucad/core";
 import type { ITrack } from "@osucad/framework";
 import { AudioBufferTrack, Axes, LoadState, SimpleFileSystem, ZipArchiveFileSystem } from "@osucad/framework";
 import type { ToParent, ToPreview } from "./protocol";
@@ -26,6 +26,8 @@ export class PreviewGame extends OsucadGameBase
   #beatmap?: Beatmap;
   #osuText = "";
   #skinContainer?: SkinProvidingContainer;
+  #outerContainer?: SkinProvidingContainer;
+  #defaultSkin?: ISkin;
   #track?: AudioBufferTrack;
   #audioData?: ArrayBuffer;
 
@@ -221,19 +223,20 @@ export class PreviewGame extends OsucadGameBase
       return;
 
     // Skin 每次重建：换 skin → sourceChanged → 所有 SkinnableSound 重取样本。
-    // skinFs 剔除歌曲文件，避免 SkinSampleStore.loadAll 把整首 MP3 也解码；
-    // 先铺默认皮肤再覆盖包内文件，保证无皮肤包也能看到物件。
-    const skinFs = new IndexedSampleFileSystem();
-    for (const [name, data] of await defaultSkinFiles())
-      await skinFs.create(name, data);
+    // 采样分两层（lazer LegacyBeatmapSkin / LegacySkin 语义）：
+    //   谱面文件层（BeatmapSkin，UseCustomSampleBanks=true）：解析下标 ≥1 才查，
+    //     下标 ≥2 时只查带后缀名，不回落包内裸名；
+    //   默认皮肤层（DefaultSkin，UseCustomSampleBanks=false）：下标 ≥2 剥后缀查裸名。
+    // beatmapFs 剔除歌曲文件，避免 SkinSampleStore.loadAll 把整首 MP3 也解码。
+    const beatmapFs = new SimpleFileSystem();
     for (const entry of fs.entries())
     {
       if (entry.path === audioPath)
         continue;
-      await skinFs.create(entry.path, await entry.read());
+      await beatmapFs.create(entry.path, await entry.read());
     }
 
-    const skin = new Skin(skinFs, this);
+    const skin = new BeatmapSkin(beatmapFs, this);
     // 谱面 [Colours] 的 combo 颜色优先于皮肤默认（未解析到时 Skin 回落纯白）
     if (beatmap.colors.comboColors.length)
       skin.config.comboColors = [...beatmap.colors.comboColors];
@@ -245,20 +248,23 @@ export class PreviewGame extends OsucadGameBase
     const skinT: ISkin
       = (await beatmap.beatmapInfo.ruleset?.createSkinTransformer?.(skin)) ?? skin;
 
-    // 采样命中统计（验证用）：命中数 = 在 fs 里找到文件的查询次数
-    const skinAny = skinT as ISkin & { getSample: ISkin["getSample"] };
-    const origGetSample = skinAny.getSample.bind(skinT);
-    let logged = 0;
-    skinAny.getSample = (info) =>
+    // 默认皮肤层常驻（文件不变），同样经 ruleset transformer 拿纹理/采样 store
+    if (!this.#defaultSkin)
     {
-      this.#sampleLookups++;
-      const sample = origGetSample(info);
-      if (sample)
-        this.#sampleHits++;
-      else if (logged++ < 12)
-        console.log("sample miss:", JSON.stringify(info.lookupNames));
-      return sample;
-    };
+      const skin = new DefaultSkin(await defaultSkinFs(), this);
+      await skin.samples.loadAll();
+      this.#defaultSkin
+        = (await beatmap.beatmapInfo.ruleset?.createSkinTransformer?.(skin)) ?? skin;
+    }
+
+    if (!this.#outerContainer)
+    {
+      this.#outerContainer = new SkinProvidingContainer({
+        relativeSizeAxes: Axes.Both,
+        skin: this.#defaultSkin,
+      });
+      this.add(this.#outerContainer);
+    }
 
     if (seq !== this.#seq)
       return;
@@ -272,10 +278,25 @@ export class PreviewGame extends OsucadGameBase
         child: screen,
       });
 
+      // 采样命中统计（验证用）：挂在串链末端，穿透两层后仍 miss 才算未命中
+      const skinAny = container as unknown as ISkin & { getSample: ISkin["getSample"] };
+      const origGetSample = skinAny.getSample.bind(container);
+      let logged = 0;
+      skinAny.getSample = (info) =>
+      {
+        this.#sampleLookups++;
+        const sample = origGetSample(info);
+        if (sample)
+          this.#sampleHits++;
+        else if (logged++ < 12)
+          console.log("sample miss:", JSON.stringify(info.lookupNames));
+        return sample;
+      };
+
       const old = this.#skinContainer;
-      this.add(container);
+      this.#outerContainer.add(container);
       if (old)
-        this.remove(old);
+        this.#outerContainer.remove(old);
       this.#skinContainer = container;
     }
     else
@@ -357,21 +378,17 @@ export class PreviewGame extends OsucadGameBase
   }
 }
 
-// osu! 的 hitsound 查询带自定义样本组下标（timing 点 index）：
-// `drum-hitnormal1`/`soft-hitwhistle2`… —— 文件系统里通常只有裸名
-// `drum-hitnormal.wav`。下标文件不存在时按 osu! 语义回落到裸名。
-class IndexedSampleFileSystem extends SimpleFileSystem
-{
-  override get(path: string)
-  {
-    const hit = super.get(path);
-    if (hit)
-      return hit;
+let defaultFsPromise: Promise<SimpleFileSystem> | undefined;
 
-    // 只在「词干尾部是纯数字 + 音频扩展名」时回落（如 hitnormal1.wav → hitnormal.wav）
-    const stripped = path.replace(/([^/]*?)\d+(\.(?:wav|mp3|ogg))$/, "$1$2");
-    return stripped === path ? undefined : super.get(stripped);
-  }
+function defaultSkinFs()
+{
+  return defaultFsPromise ??= (async () =>
+  {
+    const fs = new SimpleFileSystem();
+    for (const [name, data] of await defaultSkinFiles())
+      await fs.create(name, data);
+    return fs;
+  })();
 }
 
 function bytesEqual(a: ArrayBuffer, b: ArrayBuffer)

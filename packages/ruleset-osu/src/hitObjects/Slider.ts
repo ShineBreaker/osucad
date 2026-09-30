@@ -1,5 +1,5 @@
 import type { BeatmapDifficultyInfo, HitSoundInfo, IBeatmapTiming } from "@osucad/core";
-import { HitSampleInfo, HitWindows, safeAssign, SampleAdditions, SampleSet, sampleSetToBank } from "@osucad/core";
+import { CONTROL_POINT_LENIENCY, HitSampleInfo, HitWindows, safeAssign } from "@osucad/core";
 import { Bindable, BindableNumber, Vec2 } from "@osucad/framework";
 import type { OsuHitObjectOptions } from "./OsuHitObject";
 import { OsuHitObject } from "./OsuHitObject";
@@ -124,18 +124,24 @@ export class Slider extends OsuHitObject
   {
     super.applyDefaultsToSelf(difficulty, timing);
 
-    const timingPoint = timing.getTimingInfoAt(this.startTime + 1);
+    // lazer：TimingPointAt(StartTime) 与 DifficultyPointAt(StartTime)——均不带偏移
+    const timingPoint = timing.getTimingInfoAt(this.startTime);
 
     const baseVelocity = Slider.BASE_SCORING_DISTANCE * difficulty.sliderMultiplier / timingPoint.beatLength;
 
-    const sliderVelocity = timing.getSliderVelocityAt(this.startTime + 1);
+    const sliderVelocity = timing.getSliderVelocityAt(this.startTime);
+    const generateTicks = timing.getGenerateTicksAt(this.startTime);
 
     this.velocity = baseVelocity * sliderVelocity;
+    this.#generateTicks = generateTicks;
 
     const scoringDistance = this.velocity * timingPoint.beatLength;
 
     this.#tickDistance = scoringDistance / difficulty.sliderTickRate;
   }
+
+  /** 控制点 GenerateTicks——绿线 NaN beatLength 时为 false（lazer DifficultyPoint.GenerateTicks） */
+  #generateTicks = true;
 
   readonly path = new SliderPath();
 
@@ -166,7 +172,7 @@ export class Slider extends OsuHitObject
   {
     super.createNestedHitObjects();
 
-    for (const e of SliderEventGenerator.generate(this.startTime, this.spanDuration(), this.velocity, this.tickDistance, this.path.distance, this.spanCount()))
+    for (const e of SliderEventGenerator.generate(this.startTime, this.spanDuration(), this.velocity, this.tickDistance, this.path.distance, this.spanCount(), this.#generateTicks))
     {
       switch (e.type)
       {
@@ -178,6 +184,7 @@ export class Slider extends OsuHitObject
           position: this.position.add(this.path.positionAt(e.pathProgress)),
           pathProgress: e.pathProgress,
           stackHeight: this.stackHeight,
+          slider: this,
         }));
         break;
       case SliderEventType.Head:
@@ -216,23 +223,25 @@ export class Slider extends OsuHitObject
     return HitWindows.Empty;
   }
 
+  /** 对象级 hitnormal 改名 `slidertick`——所有 tick 复用（lazer UpdateNestedSamples） */
+  tickSample: HitSampleInfo | null = null;
+
   protected override createSamples(timing: IBeatmapTiming)
   {
-    const sampleInfo = timing.getSampleInfoAt(this.startTime);
+    // lazer：滑条对象级采样取 startTime + CONTROL_POINT_LENIENCY + 1 处的控制点，
+    // sliderslide/sliderwhistle/slidertick 都由解析后的对象采样改名派生（保留 bank/下标/音量）
+    const resolved = this.hitSound.getSamples(this.startTime + CONTROL_POINT_LENIENCY + 1, timing);
 
-    const sampleSet = this.hitSound.sampleSet !== SampleSet.None ? this.hitSound.sampleSet : sampleInfo.sampleSet;
-    const additionSampleSet = this.hitSound.additionSampleSet !== SampleSet.None ? this.hitSound.sampleSet : sampleSet;
+    const normalSample = resolved.find(s => s.name === HitSampleInfo.HIT_NORMAL) ?? resolved[0];
+    const whistleSample = resolved.find(s => s.name === HitSampleInfo.HIT_WHISTLE);
 
-    const suffix = sampleInfo.sampleIndex > 0 ? sampleInfo.sampleIndex.toString() : undefined;
+    this.tickSample = normalSample?.with("slidertick") ?? null;
 
-    const samples: HitSampleInfo[] = [
-      new HitSampleInfo("sliderslide", sampleSetToBank(sampleSet), suffix, sampleInfo.volume),
-    ];
-
-    if (this.hitSound.additions && SampleAdditions.Whistle)
-    {
-      samples.push(new HitSampleInfo("sliderwhistle", sampleSetToBank(additionSampleSet), suffix, sampleInfo.volume));
-    }
+    const samples: HitSampleInfo[] = [];
+    if (normalSample)
+      samples.push(normalSample.with("sliderslide"));
+    if (whistleSample)
+      samples.push(whistleSample.with("sliderwhistle"));
 
     return samples;
   }

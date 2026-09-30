@@ -1,4 +1,6 @@
 export * from "./Skin";
+export * from "./BeatmapSkin";
+export * from "./DefaultSkin";
 export * from "./ISkin";
 export * from "./ISkinSource";
 export * from "./SkinTransformer";
