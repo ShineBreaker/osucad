@@ -225,7 +225,7 @@ export function defaultSkinFiles(): Promise<Map<string, ArrayBuffer>>
     await set("sliderb0", 64, sliderBall);
     await set("sliderfollowcircle", 128, followCircle);
     await set("reversearrow", 96, chevron);
-    await set("followpoint-0", 64, chevron);
+    // followpoint 不生成——皮肤里没有该文件时物件间引导点不渲染（osu! 语义）
     await set("cursor", 48, argonCursor);
     await set("hit300", 160, judgement("300", "#bfe9ff"));
     await set("hit100", 160, judgement("100", "#8ee6a0"));

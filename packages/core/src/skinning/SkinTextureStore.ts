@@ -1,6 +1,5 @@
 import type { ComputedRef } from "@osucad/framework";
 import { Action, computed, DrawableSprite, type IFile, loadTexture, reactive, ref, unref, watch } from "@osucad/framework";
-import { computedAsync } from "@vueuse/core";
 import { deferredPromise } from "../utils/DeferredPromise";
 import type { Texture } from "pixi.js";
 import type { Skin } from "./Skin";
@@ -206,31 +205,38 @@ class ReactiveTextureEntry
 
   readonly entry = computed(() => this.store.getEntry(this.manifest.name));
 
-  readonly texture = computedAsync(async () =>
-  {
-    try
-    {
-      const entry = this.entry.value;
-
-      if (!entry)
-        return null;
-
-      const data = await entry.file.read();
-
-      const is2xTexture = entry.file.path.includes("@2x");
-
-      return await loadTexture(data, { resolution: is2xTexture ? 2 : 1, label: entry.file.path });
-    }
-    finally
-    {
-      setTimeout(() => this.isLoaded.resolve(), 0);
-    }
-  }, null, { lazy: false });
+  // 不用 vueuse computedAsync：它经 vue@3.5.35 解析到另一份 @vue/reactivity，
+  // 追踪不到本框架 3.5.34 的 ref/computed——异步求值只跑一次且不随依赖重算，
+  // 纹理/动画会永远停在初始空值（entry 晚到或文件变更后都不会刷新）。
+  readonly texture = ref<Texture | null>(null);
 
   isLoaded = deferredPromise<void>();
 
   async load()
   {
+    let seq = 0;
+    watch(this.entry, async (entry) =>
+    {
+      const token = ++seq;
+      let texture: Texture | null = null;
+      try
+      {
+        if (entry)
+        {
+          const data = await entry.file.read();
+          const is2xTexture = entry.file.path.includes("@2x");
+          texture = await loadTexture(data, { resolution: is2xTexture ? 2 : 1, label: entry.file.path });
+        }
+      }
+      catch
+      {
+        texture = null;
+      }
+      if (token === seq)
+        this.texture.value = texture;
+      this.isLoaded.resolve();
+    }, { immediate: true });
+
     await this.isLoaded;
 
     watch(this.texture, () =>
@@ -309,21 +315,7 @@ class ReactiveAnimationEntry
 
   entriesDebounced = ref<ReactiveFileEntry[]>([]);
 
-  readonly textures = computedAsync(async () =>
-  {
-    try
-    {
-      const entries = this.entriesDebounced.value;
-
-      const textures = await Promise.all(entries.map(entry => this.#loadTexture(entry)));
-
-      return textures.filter(it => it !== null) as Texture[];
-    }
-    finally
-    {
-      setTimeout(() => this.isLoaded.resolve(), 0);
-    }
-  }, [], { lazy: false });
+  readonly textures = ref<Texture[]>([]);
 
   async #loadTexture(entry: ReactiveFileEntry)
   {
@@ -338,6 +330,18 @@ class ReactiveAnimationEntry
 
   async load()
   {
+    let seq = 0;
+    watch(this.entriesDebounced, async (entries) =>
+    {
+      const token = ++seq;
+      const loaded = await Promise.all(
+          entries.map(entry => this.#loadTexture(entry).catch(() => null)),
+      );
+      if (token === seq)
+        this.textures.value = loaded.filter((t): t is Texture => t !== null);
+      this.isLoaded.resolve();
+    }, { immediate: true });
+
     await this.isLoaded;
 
     watch(this.textures, () =>
