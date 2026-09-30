@@ -15,6 +15,17 @@ import type { Judgement } from "../../judgements/Judgement";
 import type { HitResult } from "../../scoring/HitResult";
 import { SkinnableSound } from "../../../skinning/SkinnableSound";
 
+/** 命中采样预调度窗口（ms）：判定由输入帧驱动、恒晚于命中时刻 1~2 帧
+ *  （press 跨帧 + 帧内子树遍历），等判定再播 hitsound 必迟到。窗口必须
+ *  覆盖最大判定延迟（掉帧帧长 × 2 以上），100ms 对 60fps 足够富余；
+ *  暂停/seek 的撤销由 SampleChannel 登记表兜底，窗口大小不影响正确性 */
+const hitSampleScheduleAhead = 100;
+
+/** 判定路径补放的迟到容忍（ms）：仅剩 ≤10ms 的迟到值得补放（听感门限），
+ *  更大的负 delta 说明命中时刻落在冻结/跳过区间内——补放只能是错拍爆音，
+ *  宁缺勿错拍（判定与视觉照旧） */
+const hitSampleLateTolerance = 10;
+
 @provideSelf()
 export class DrawableHitObject<out T extends HitObject = HitObject>
   extends PoolableDrawableWithLifetime<HitObjectLifetimeEntry>
@@ -235,6 +246,9 @@ export class DrawableHitObject<out T extends HitObject = HitObject>
     this.samplesBindable.unbindFrom(this.hitObject.samplesBindable);
 
     this.#samplesLoaded = false;
+    // 池化复用：上一命中的预调度代际记录必须清掉，
+    // 否则新物件会被误判「已调度」而漏播命中采样
+    this.#hitSampleScheduleGeneration = null;
     this.samples?.clearSamples();
 
     for (const obj of this.#nestedHitObjects)
@@ -372,6 +386,8 @@ export class DrawableHitObject<out T extends HitObject = HitObject>
       this.loadSamples();
     }
 
+    this.#scheduleHitSamplesAhead();
+
     super.update();
   }
 
@@ -424,20 +440,69 @@ export class DrawableHitObject<out T extends HitObject = HitObject>
     this.skin.sourceChanged.removeListener(this.skinChanged, this);
   }
 
-  protected playSamples()
-  {
-    let when: number | undefined;
+  /** 已把命中采样调度到未来的轨代际；轨 stop/seek（generation 递增）后
+   *  预调度已被撤销、此记录作废，等待重新调度 */
+  #hitSampleScheduleGeneration: number | null = null;
 
-    // 时钟源为音频轨时把采样调度到命中时刻对应的 AudioContext 时间，
-    // 消除帧边界起播的量化抖动；暂停/无轨/非正常速率回落即时播放
+  #audioTrack(): AudioBufferTrack | null
+  {
     let source: unknown = this.clock;
     while (source instanceof FramedClock)
       source = source.source;
 
-    if (source instanceof AudioBufferTrack && source.isRunning && source.rate > 0 && this.hitObject)
+    return source instanceof AudioBufferTrack ? source : null;
+  }
+
+  /** 命中采样提前调度（同步性核心）：在到达命中时刻前 hitSampleScheduleAhead
+   *  窗口内提前调 playSamples——此时 delta > 0，采样被调度到 AudioContext
+   *  的精确命中时刻（Web Audio 未来调度 sub-ms 精度），完全绕开「判定恒晚
+   *  1~2 帧」的输入帧延迟。判定/视觉/分数照旧走原路径（playSamples 见
+   *  已调度标记跳过，防双播）。本预览为 autoplay（全部命中），提前发声
+   *  不依赖判定结果 */
+  #scheduleHitSamplesAhead(): void
+  {
+    const startTime = this.hitObject?.startTime;
+    if (startTime === undefined)
+      return;
+
+    const track = this.#audioTrack();
+    if (!track || !track.isRunning || track.rate <= 0)
+      return;
+
+    if (this.#hitSampleScheduleGeneration === track.generation)
+      return;
+
+    const delta = startTime - track.currentTime;
+    if (delta <= 0 || delta > hitSampleScheduleAhead)
+      return;
+
+    this.playSamples();
+    this.#hitSampleScheduleGeneration = track.generation;
+  }
+
+  protected playSamples()
+  {
+    const track = this.#audioTrack();
+
+    // 预调度已把采样安排在精确命中时刻：判定路径不再补播（否则双击）。
+    // generation 落后 = 轨曾中断（撤销已发生），照常走下方兜底
+    if (track && this.#hitSampleScheduleGeneration === track.generation)
+      return;
+
+    let when: number | undefined;
+
+    // 时钟源为音频轨时把采样调度到命中时刻对应的 AudioContext 时间；
+    // 暂停/无轨/非正常速率回落即时播放
+    if (track && track.isRunning && track.rate > 0 && this.hitObject)
     {
-      const delta = this.hitObject.startTime - source.currentTime;
-      when = source.context.currentTime + Math.max(0, delta) / source.rate / 1000;
+      const delta = this.hitObject.startTime - track.currentTime;
+
+      // 命中时刻已落入无帧区间（主线程冻结恢复/seek 大跳的首帧快照）：
+      // 补放只能是迟到错拍，宁缺勿错拍
+      if (delta < -hitSampleLateTolerance)
+        return;
+
+      when = track.context.currentTime + Math.max(0, delta) / track.rate / 1000;
     }
 
     this.samples?.play(when);

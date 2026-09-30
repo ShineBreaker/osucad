@@ -1,4 +1,10 @@
+import { SampleChannel } from "./SampleChannel";
 import { Track } from "./Track";
+
+// 轨代际全局单调分配：换轨后新实例的代际不会与旧实例巧合相等——
+// 命中采样预调度按「数值相等」判断「同轨同代际」，相等误判会导致
+// 池化复用的物件跳过重调度而漏播
+let globalTrackGeneration = 0;
 
 export class AudioBufferTrack extends Track
 {
@@ -59,18 +65,23 @@ export class AudioBufferTrack extends Track
 
     this.#source = this.createSource();
 
+    // 基线与 source.start 的调度时刻必须同读一次 ctx 时钟：起播基线读在
+    // start 之后会系统性偏晚（ctx.currentTime 按 render quantum 台阶推进，
+    // 后读可能已跨步），后续 currentTime/采样 when 的换算全体偏晚
+    const ctxNow = this.context.currentTime;
+
     let offset = this.#offset / 1000;
     let when: number | undefined;
 
     if (offset < 0)
     {
-      when = (this.context.currentTime - offset) / this.rate;
+      when = (ctxNow - offset) / this.rate;
       offset = 0;
     }
 
     this.#source.start(when, offset);
 
-    this.#contextTimeAtStart = this.contextTimeMillis;
+    this.#contextTimeAtStart = ctxNow * 1000;
     this.#timeAtStart = this.#offset;
 
     this.#source.onended = () =>
@@ -88,6 +99,11 @@ export class AudioBufferTrack extends Track
 
   override stop(): void
   {
+    // 轨停止打破「以当前速率连续推进」的时序假设：先把调度在未来、尚未
+    // 发声的采样统一掐断（暂停/seek 跳转后放出即幽灵音），再停源
+    SampleChannel.cancelScheduled(this.context);
+    this.#generation = ++globalTrackGeneration;
+
     const source = this.#source;
     if (!source)
       return;
@@ -98,6 +114,16 @@ export class AudioBufferTrack extends Track
     this.#source = null;
 
     this.#offset = (this.contextTimeMillis - this.#contextTimeAtStart) * this.rate + this.#timeAtStart;
+  }
+
+  #generation = ++globalTrackGeneration;
+
+  /** 轨中断（stop/seek 会使之以 stop+start 重启）单调递增的代际计数。
+   *  命中采样提前调度用它识别「预调度作废」：代际落后 = 撤销已发生，
+   *  物件重新调度即可，不会因旧调度悬挂而双播或漏播 */
+  get generation(): number
+  {
+    return this.#generation;
   }
 
   override get isRunning(): boolean

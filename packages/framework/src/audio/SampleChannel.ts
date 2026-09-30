@@ -41,6 +41,10 @@ export class SampleChannel extends AudioComponent implements IAudioSource
 
   #played = false;
 
+  // 调度在未来、尚未发声的 ctx 时刻（秒）；null = 无未来调度。
+  // 与 #scheduled 登记表配合，供轨 stop/seek 时统一掐断（见 cancelScheduled）
+  #scheduledAt: number | null = null;
+
   constructor(readonly sample: Sample)
   {
     super(`SampleChannel (${sample.name})`);
@@ -70,6 +74,15 @@ export class SampleChannel extends AudioComponent implements IAudioSource
       this.#source.playbackRate.value = this.sample.rate.value;
 
     this.#source.start(when);
+
+    // 一次性采样被调度到未来（命中采样提前调度路径）时登记：
+    // 轨 stop/seek 后这些采样相对新位置已错位，放出即幽灵音
+    if (!this.looping && when != null && when > this.sample.context.currentTime)
+    {
+      this.#scheduledAt = when;
+      SampleChannel.#scheduledFor(this.sample.context).add(this);
+    }
+
     this.onPlay.emit(this);
 
     this.#playing = true;
@@ -85,6 +98,7 @@ export class SampleChannel extends AudioComponent implements IAudioSource
       this.#source.stop();
 
     this.#playing = false;
+    this.#unregister();
   }
 
   get playing()
@@ -106,9 +120,49 @@ export class SampleChannel extends AudioComponent implements IAudioSource
 
   #disposeAfterEnded = false;
 
+  // 未来调度登记表（按 AudioContext 分组）。静态持有 channel 引用，
+  // 发声开始（自然 ended）或 stop 时移除，不会长期滞留
+  static readonly #scheduled = new Map<BaseAudioContext, Set<SampleChannel>>();
+
+  static #scheduledFor(context: BaseAudioContext): Set<SampleChannel>
+  {
+    let set = SampleChannel.#scheduled.get(context);
+    if (!set)
+      SampleChannel.#scheduled.set(context, set = new Set());
+    return set;
+  }
+
+  #unregister()
+  {
+    this.#scheduledAt = null;
+    SampleChannel.#scheduled.get(this.sample.context)?.delete(this);
+  }
+
+  /** 掐断该 ctx 上所有调度在未来、尚未发声的一次性采样。
+   *  由 AudioBufferTrack.stop() 调用：轨停止/跳转打破了「轨以当前速率
+   *  连续推进」的时序假设，已排定的未来采样不再成立（放出即幽灵音）。
+   *  Web Audio 语义下对已 start(when) 未发声的节点 stop() 即在当前
+   *  ctx 时刻掐断，不会发声。已开始发声的不受影响。 */
+  static cancelScheduled(context: BaseAudioContext): void
+  {
+    const set = SampleChannel.#scheduled.get(context);
+    if (!set)
+      return;
+
+    const now = context.currentTime;
+    for (const channel of set)
+    {
+      if (channel.#scheduledAt != null && channel.#scheduledAt > now)
+        channel.stop();
+    }
+
+    SampleChannel.#scheduled.delete(context);
+  }
+
   #onEnded()
   {
     this.#playing = false;
+    this.#unregister();
 
     if (this.#disposeAfterEnded)
       this.dispose();
