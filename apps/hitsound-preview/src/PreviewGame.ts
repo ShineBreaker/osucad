@@ -222,7 +222,7 @@ export class PreviewGame extends OsucadGameBase
     // Skin 每次重建：换 skin → sourceChanged → 所有 SkinnableSound 重取样本。
     // skinFs 剔除歌曲文件，避免 SkinSampleStore.loadAll 把整首 MP3 也解码；
     // 先铺默认皮肤再覆盖包内文件，保证无皮肤包也能看到物件。
-    const skinFs = new SimpleFileSystem();
+    const skinFs = new IndexedSampleFileSystem();
     for (const [name, data] of await defaultSkinFiles())
       await skinFs.create(name, data);
     for (const entry of fs.entries())
@@ -243,12 +243,15 @@ export class PreviewGame extends OsucadGameBase
     // 采样命中统计（验证用）：命中数 = 在 fs 里找到文件的查询次数
     const skinAny = skinT as ISkin & { getSample: ISkin["getSample"] };
     const origGetSample = skinAny.getSample.bind(skinT);
+    let logged = 0;
     skinAny.getSample = (info) =>
     {
       this.#sampleLookups++;
       const sample = origGetSample(info);
       if (sample)
         this.#sampleHits++;
+      else if (logged++ < 12)
+        console.log("sample miss:", JSON.stringify(info.lookupNames));
       return sample;
     };
 
@@ -346,6 +349,23 @@ export class PreviewGame extends OsucadGameBase
     }
 
     return parsed;
+  }
+}
+
+// osu! 的 hitsound 查询带自定义样本组下标（timing 点 index）：
+// `drum-hitnormal1`/`soft-hitwhistle2`… —— 文件系统里通常只有裸名
+// `drum-hitnormal.wav`。下标文件不存在时按 osu! 语义回落到裸名。
+class IndexedSampleFileSystem extends SimpleFileSystem
+{
+  override get(path: string)
+  {
+    const hit = super.get(path);
+    if (hit)
+      return hit;
+
+    // 只在「词干尾部是纯数字 + 音频扩展名」时回落（如 hitnormal1.wav → hitnormal.wav）
+    const stripped = path.replace(/([^/]*?)\d+(\.(?:wav|mp3|ogg))$/, "$1$2");
+    return stripped === path ? undefined : super.get(stripped);
   }
 }
 
