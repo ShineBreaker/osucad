@@ -30,23 +30,24 @@ async function png(size: number, draw: (ctx: CanvasRenderingContext2D, s: number
 // OUTER_GRADIENT = D−4·BORDER ≈ 0.862；INNER_GRADIENT = OUTER−2·GT ≈ 0.69；INNER_FILL ≈ 0.517
 const F_INNER_FILL = 0.517, F_INNER_GRAD = 0.69, F_OUTER_GRAD = 0.862;
 
-const DARK = "#17171c";   // accent.Darken(4) 的灰度近似（乘染后 ≈ 极暗 accent）
 const MID = "#8f8f99";    // accent.Darken(0.5..0.6)
 const BRIGHT = "#ffffff"; // accent 全亮
 
-// Argon 圈体：暗心 → 中层渐亮 → 外层亮环 → 描边环之下回落暗色。
+// Argon 圈体（透明底变体）：内心透明 → 中层渐亮 → 外层亮环 →
+// 描边环之下回落透明。原版 Argon 是 accent.Darken(4) 暗心，这里按需求
+// 去掉底色——透明底在乘染后仍只显示 accent 亮环与白描边。
 // 只填圆形区域（arc），圆外必须保持透明——fillRect 会让四角钳制成
-// 渐变末端的深色，渲染出来就是物件后面的黑色方块，还会污染滑条。
+// 渐变末端颜色，渲染出来就是物件后面的方块，还会污染滑条。
 function argonCircle(ctx: CanvasRenderingContext2D, s: number)
 {
   const r = s / 2;
   const g = ctx.createRadialGradient(r, r, 0, r, r, r);
-  g.addColorStop(0, DARK);
-  g.addColorStop(F_INNER_FILL - 0.02, DARK);
-  g.addColorStop(F_INNER_GRAD, MID);
+  g.addColorStop(0, "rgba(143,143,153,0)");
+  g.addColorStop(F_INNER_FILL - 0.02, "rgba(143,143,153,0)");
+  g.addColorStop(F_INNER_GRAD, "rgba(143,143,153,0.55)");
   g.addColorStop(F_OUTER_GRAD, BRIGHT);
-  g.addColorStop(F_OUTER_GRAD + 0.03, DARK);
-  g.addColorStop(1, DARK);
+  g.addColorStop(F_OUTER_GRAD + 0.03, "rgba(255,255,255,0)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.arc(r, r, r, 0, Math.PI * 2);
